@@ -16,7 +16,7 @@ One stock-history request uses one allowance slot. Reserved slots remain counted
 
 ## Updating from 0.4.1
 
-Keychain and Windows Credential Manager integration has been removed at the user's request. Save your API key once in Settings after updating; the app never reads the previous system credential, including during startup, navigation or reset. Your portfolio and cached data remain intact. Keys are now saved in `eodhd-api-key.txt` alongside the database, with owner-only permissions on macOS/Linux. They are plaintext and should be excluded from shared backups. Reset and Remove API key delete the local file. Previous OS credential entries are not accessed or automatically migrated.
+Keychain and Windows Credential Manager integration has been removed at the user's request. Save your API key once in Settings after updating; the app never reads the previous system credential, including during startup, navigation or reset. Your portfolio and cached data remain intact. Keys are now saved in `eodhd-api-key-<profile-id>.txt` alongside the database, with owner-only permissions on macOS/Linux. They are plaintext and should be excluded from shared backups. Reset and Remove API key delete the local file. Previous OS credential entries are not accessed or automatically migrated.
 
 ## Stocks directory
 

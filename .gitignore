@@ -7,3 +7,5 @@ src-tauri/target/
 # Local provider keys must never be committed.
 eodhd-api-key.txt
 eodhd-api-key.tmp-*
+eodhd-api-key-*.txt
+eodhd-api-key-*.tmp-*

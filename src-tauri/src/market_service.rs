@@ -15,7 +15,7 @@ pub fn market_key_status(store: &Mutex<Store>, profile_id: String) -> Result<Key
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
     Ok(KeyStatus {
-        configured: credentials::configured(db.credential_path()?)?,
+        configured: credentials::configured(&db.credential_path(&profile_id)?)?,
         supported: true,
         storage: "Local file on this device",
     })
@@ -28,12 +28,12 @@ pub fn save_market_key(
     let key = market::validate_key(&key)?;
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
-    credentials::save(db.credential_path()?, key)
+    credentials::save(&db.credential_path(&profile_id)?, key)
 }
 pub fn remove_market_key(store: &Mutex<Store>, profile_id: String) -> Result<(), String> {
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
-    credentials::remove(db.credential_path()?)
+    credentials::remove(&db.credential_path(&profile_id)?)
 }
 pub fn refresh_market_prices(
     store: &Mutex<Store>,
@@ -43,7 +43,7 @@ pub fn refresh_market_prices(
     let (job, key) = {
         let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
         db.verify_profile(&profile_id)?;
-        let key = credentials::load(db.credential_path()?)?
+        let key = credentials::load(&db.credential_path(&profile_id)?)?
             .ok_or("Add your EODHD API key in Settings first.")?;
         market::validate_key(&key)?;
         (db.begin_refresh(&profile_id, security_ids)?, key)
@@ -85,7 +85,7 @@ pub fn reset_profile(
     if confirmation != "RESET" {
         return Err("Type RESET to confirm permanently clearing all local progress.".into());
     }
-    credentials::remove(db.credential_path()?)?;
+    credentials::remove(&db.credential_path(&profile_id)?)?;
     db.reset_profile(&profile_id, &confirmation)
 }
 
@@ -125,7 +125,7 @@ pub fn refresh_asx_directory(
     let (job, key) = {
         let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
         db.verify_profile(&profile_id)?;
-        let key = credentials::load(db.credential_path()?)?
+        let key = credentials::load(&db.credential_path(&profile_id)?)?
             .ok_or("Add your EODHD API key in Settings first.")?;
         market::validate_key(&key)?;
         (db.begin_directory(&profile_id)?, key)
@@ -158,7 +158,12 @@ mod tests {
             .profile_id;
         assert!(!market_key_status(&db, id.clone()).unwrap().configured);
         save_market_key(&db, id.clone(), "example_key_123".into()).unwrap();
-        let path = db.lock().unwrap().credential_path().unwrap().to_path_buf();
+        let path = db
+            .lock()
+            .unwrap()
+            .credential_path(&id)
+            .unwrap()
+            .to_path_buf();
         std::fs::write(&path, "invalid?key").unwrap();
         assert!(market_key_status(&db, id.clone()).unwrap().configured);
         assert!(refresh_market_prices(&db, id.clone(), vec![1]).is_err());

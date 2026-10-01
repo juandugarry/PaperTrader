@@ -318,10 +318,13 @@ impl Store {
             histories,
         })
     }
-    pub fn credential_path(&self) -> Result<&Path, String> {
-        self.credential_path
-            .as_deref()
-            .ok_or_else(|| "Local API key storage unavailable.".into())
+    pub fn credential_path(&self, profile_id: &str) -> Result<PathBuf, String> {
+        self.verify_profile(profile_id)?;
+        let path = self
+            .credential_path
+            .as_ref()
+            .ok_or("Local API key storage unavailable.")?;
+        Ok(path.with_file_name(format!("eodhd-api-key-{profile_id}.txt")))
     }
     pub fn verify_profile(&self, profile_id: &str) -> Result<(), String> {
         Self::check_profile(&self.connection, profile_id)
