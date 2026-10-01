@@ -2,19 +2,23 @@
 
 A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, cloud account, market-data provider, AI integration or real brokerage connection.
 
-## Phase 1
+## Phase 2 · manual paper trading
 
-- First-launch trader name, starting virtual capital and default brokerage (AUD / ASX).
-- Atomic profile and portfolio creation with an immutable opening cash-ledger entry.
-- Cash and starting capital derived from the ledger, not a mutable balance.
-- Trade dashboard, Journal foundation, local Learn lessons and read-only Settings.
-- Local SQLite persistence and transactional schema migration.
+- Fresh local trader profile, virtual starting capital and default brokerage (AUD / ASX).
+- Create/search local ASX securities and manually update reference prices with timestamps.
+- Review and record simulated BUY/SELL fills with per-fill brokerage.
+- Cash ledger, whole-share positions, average entry, cost basis, realised/unrealised P&L and total return.
+- Immutable execution history in Trade and Journal; SQLite persistence and versioned migrations.
 
-BUY/SELL execution, position calculations and journal editing are deliberately deferred to Phases 2 and 3. Dashboard investment/P&L values are zero because this version cannot execute trades. The BEN test checks exact monetary representation; it is not yet a trading-engine acceptance test.
+No securities, trades or personal balances are imported or seeded. The BEN scenario is automated test data only. An existing Phase 1 database migrates in place without deleting its local profile or opening-capital entry. No real orders, live market data, cloud account or AI are involved.
+
+Buy brokerage is included in average cost basis; sell brokerage reduces proceeds. Execution totals round to cents (half up), while fill prices retain up to six decimal places. A partial sale allocates cost proportionally; a full close consumes the exact remaining basis. Unpriced positions show valuation as unavailable. See [accounting rules](docs/architecture.md).
+
+Trading thesis, targets/stops and exit reviews are Phase 3. Pending market/limit/stop orders remain deferred.
 
 ## Open from your Mac desktop
 
-**Download a built app:** open this repository’s **Actions** tab, select the latest successful **Phase 1 checks** run, and download the **PaperTrader-macOS** artifact. Unzip the download, then unzip `PaperTrader-macOS.zip`. Move `PaperTrader.app` to Applications and create a Finder alias on your Desktop (select the app, File → Make Alias, then move the alias to Desktop). Double-click the app to launch; Node, Rust and a terminal are not needed to run a built app. The universal bundle supports Apple Silicon and Intel Macs.
+**Download a built app:** open this repository’s **Actions** tab, select the latest successful **PaperTrader checks** run, and download the **PaperTrader-macOS** artifact. Unzip the download, then unzip `PaperTrader-macOS.zip`. Move `PaperTrader.app` to Applications and create a Finder alias on your Desktop (select the app, File → Make Alias, then move the alias to Desktop). Double-click the app to launch; Node, Rust and a terminal are not needed to run a built app. The universal bundle supports Apple Silicon and Intel Macs.
 
 These development builds are unsigned and not notarised. macOS may block the first launch. After verifying you downloaded this repository’s build, use System Settings → Privacy & Security → Open Anyway if offered. Do not disable Gatekeeper globally. Signing/notarisation remain required for normal distribution.
 
@@ -27,7 +31,7 @@ cd PaperTrader
 ./Install\ PaperTrader.command
 ```
 
-A successful GitHub Actions build is required before a downloadable artifact exists. macOS packaging has not been verified on this Linux machine.
+A successful GitHub Actions build is required before a downloadable artifact exists. Phase 2 macOS packaging has not been verified on this Linux machine. The earlier Phase 1 build was opened successfully on the user’s Mac.
 
 ## Develop on macOS
 
@@ -58,4 +62,4 @@ The Rust domain and SQLite tests do not require GUI libraries (`--no-default-fea
 
 ## Architecture
 
-See [Phase 1 design](docs/architecture.md) for the exact project structure, schema, monetary representation and future migration boundaries.
+See [architecture and accounting design](docs/architecture.md) for the exact project structure, schema, monetary representation and future migration boundaries.

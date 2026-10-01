@@ -6,6 +6,9 @@ import {
   type Snapshot,
 } from "./api";
 import { formatMoney, parseMoney } from "./domain/money";
+import TradingWorkspace, {
+  ExecutionHistory,
+} from "./components/TradingWorkspace";
 
 type Page = "Trade" | "Journal" | "Learn" | "Settings";
 const lessons = [
@@ -32,7 +35,7 @@ const lessons = [
   {
     title: "Market & limit orders",
     category: "ORDER TYPES",
-    body: "A market order prioritises execution rather than price. A limit order sets the most you will pay to buy or the least you will accept to sell, but may never fill. PaperTrader’s first phase has no order execution; manual simulated fills arrive in the next phase.",
+    body: "A market order prioritises execution rather than price. A limit order sets the most you will pay to buy or the least you will accept to sell, but may never fill. PaperTrader records manually entered simulated fills. Pending market, limit and stop orders are not implemented yet.",
   },
 ];
 export default function App() {
@@ -68,7 +71,7 @@ export default function App() {
             profile.
           </p>
           <p className="muted">
-            Phase 1 · No cloud account · Fictional money only
+            Phase 2 · No cloud account · Fictional money only
           </p>
         </section>
       </div>
@@ -92,13 +95,6 @@ export default function App() {
       </div>
     );
   if (!snapshot) return <Onboarding onCreated={setSnapshot} />;
-  const metrics = [
-    ["Portfolio value", snapshot.cashMicros],
-    ["Available cash", snapshot.cashMicros],
-    ["Capital invested", 0],
-    ["Unrealised P&L", 0],
-    ["Realised P&L", 0],
-  ] as const;
   return (
     <div className="shell">
       <aside>
@@ -163,88 +159,21 @@ export default function App() {
                     : "An independent portfolio, stored on this device."}
             </p>
           </div>
-          <span className="phase">PHASE 1</span>
+          <span className="phase">PHASE 2</span>
         </div>
         {page === "Trade" && (
-          <>
-            <div className="hero panel">
-              <div>
-                <span className="eyebrow">TOTAL PORTFOLIO VALUE</span>
-                <h2>{formatMoney(snapshot.cashMicros)}</h2>
-                <span className="muted">
-                  Starting capital {formatMoney(snapshot.startingCapitalMicros)}
-                </span>
-              </div>
-              <div className="return">
-                <span className="eyebrow">TOTAL RETURN</span>
-                <strong>0.00%</strong>
-                <span>No executed trades yet</span>
-              </div>
-            </div>
-            <div className="metrics">
-              {metrics.slice(1).map(([label, value]) => (
-                <section className="panel metric" key={label}>
-                  <span>{label}</span>
-                  <strong>{formatMoney(value)}</strong>
-                </section>
-              ))}
-            </div>
-            <section className="panel positions">
-              <div className="section-title">
-                <h3>Open positions</h3>
-                <span className="count">0 positions</span>
-              </div>
-              <div className="empty">
-                <div className="empty-icon">
-                  <TrendIcon />
-                </div>
-                <h3>A fresh start for your portfolio</h3>
-                <p>
-                  Your capital is ready. Manual simulated buys and sells
-                  <br />
-                  will be available in the next development phase.
-                </p>
-                <button className="secondary" onClick={() => setPage("Learn")}>
-                  Explore trading basics <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </section>
-            <div className="notice">
-              <span aria-hidden="true">ⓘ</span>
-              <p>
-                <strong>Practice with perspective.</strong> All balances are
-                fictional. No brokerage account or real orders are connected.
-              </p>
-            </div>
-          </>
+          <TradingWorkspace snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Journal" && (
-          <section className="panel">
-            <div className="section-title">
-              <h3>Your trade history</h3>
-              <span className="count">0 entries</span>
-            </div>
-            <div className="empty">
-              <div className="empty-icon">▤</div>
-              <h3>Every trade has a story</h3>
+          <>
+            <div className="notice">
               <p>
-                Automatic trade linking and entry/exit reviews arrive in Phase
-                3.
-                <br />
-                No trades have been executed in this foundation version.
+                Your immutable fill history is available now. Trading thesis,
+                targets, stops and exit reviews will arrive in Phase 3.
               </p>
             </div>
-            <div className="journal-prompts">
-              <div>
-                <span className="eyebrow">BEFORE ENTRY</span>
-                <p>What is your thesis? What would invalidate it?</p>
-              </div>
-              <div>
-                <span className="eyebrow">AFTER EXIT</span>
-                <p>Did you follow your plan? What would you change?</p>
-              </div>
-            </div>
-          </section>
+            <ExecutionHistory executions={snapshot.trading.executions} />
+          </>
         )}
         {page === "Learn" && (
           <div className="learn-layout">
@@ -299,8 +228,9 @@ export default function App() {
               <dd>SQLite · on this device</dd>
             </dl>
             <p className="muted">
-              Settings are read-only in Phase 1. Backup, restore and reset will
-              be added in a later phase.
+              Profile settings are read-only. Brokerage can be overridden on
+              each fill. Backup, restore and reset will be added in a later
+              phase.
             </p>
           </section>
         )}
@@ -424,7 +354,8 @@ function Onboarding({
           </fieldset>
         </form>
         <small className="muted">
-          Your data stays in SQLite on this device. Trading arrives in Phase 2.
+          Your data stays in SQLite on this device. Record simulated trades
+          using manually entered prices.
         </small>
       </section>
     </div>

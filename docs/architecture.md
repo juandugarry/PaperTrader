@@ -1,50 +1,66 @@
-# Phase 1 architecture
+# Phase 2 architecture
 
-## Project structure and dependencies
+## Structure
 
 ```text
 src/
-  App.tsx                onboarding, Trade / Journal / Learn / Settings
-  api.ts                 typed Tauri IPC boundary
-  domain/money.ts        exact decimal-text parsing and AUD display
-  *.test.tsx             interaction tests with explicitly mocked IPC
+  App.tsx                         profile, navigation, learning, settings
+  components/TradingWorkspace.tsx securities, prices, review/confirm, positions/history
+  api.ts                          typed Tauri IPC boundary
+  domain/money.ts                  exact decimal parsing and money/price display
+  domain/trade.ts                  integer order preview (Rust is authoritative)
 src-tauri/
-  src/domain.rs          pure monetary bounds and input validation
-  src/store.rs           SQLite migrations, transactions, ledger queries
-  src/lib.rs             desktop commands and app-data path resolution
-  migrations/001_foundation.sql
-  capabilities/default.json
-  tauri.conf.json
+  src/domain.rs                   profile and monetary bounds
+  src/engine.rs                   pure average-cost trading/accounting engine
+  src/trading.rs                  SQLite trading adapter and derived snapshots
+  src/store.rs                    migrations, profile, transaction orchestration
+  src/lib.rs                      commands and platform application-data directory
+  migrations/001_foundation.sql   released Phase 1 schema; unchanged
+  migrations/002_manual_trading.sql
 ```
 
-Runtime dependencies: React 19, Tauri 2 and bundled SQLite through rusqlite. Build tools: Vite 6, TypeScript 5.8 and Tauri CLI. Tests: Vitest, Testing Library, jsdom and Rust's built-in test runner. Lockfiles pin resolved dependencies. SQLite is compiled into the app, so testers do not install a database service.
+React 19, TypeScript 5.8, Vite 6, Tauri 2 and bundled SQLite through rusqlite. No new runtime dependency is needed for trading. Test dependencies are Vitest, Testing Library, jsdom and Rust's built-in runner. Both dependency lockfiles are committed; Rust is pinned in rust-toolchain.toml.
 
-Tauri keeps filesystem access in Rust. React cannot issue arbitrary SQL or choose a database path. Two commands load the current snapshot and create the initial profile. A mutex serialises database access; SQLite also enforces constraints, foreign keys and transactional writes. WAL and a five-second busy timeout are enabled. Domain validation is independent of SQLite and UI components; there is no speculative provider framework.
+All filesystem/database access remains in Rust. Commands create a profile, load a snapshot, add a security, update a manual price, and record an execution. React cannot submit arbitrary SQL, set a cash balance or edit a past fill. The engine has no persistence or UI dependency.
 
-## Initial schema
+## Schema version 2
 
-| Table       | Columns and invariants                                                                                                                         |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| settings    | Singleton `id=1`, trimmed display name, non-negative `default_brokerage_micros`, fixed `AUD` and `ASX`, UTC creation timestamp                 |
-| portfolios  | Singleton `id=1`, name and UTC creation timestamp                                                                                              |
-| cash_ledger | ID, portfolio foreign key, entry kind, signed integer monetary column (positive opening capital in v1), description and UTC creation timestamp |
+| Table       | Purpose / invariants                                                                                                                     |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| settings    | Singleton local trader, default brokerage, AUD, ASX and UTC creation time                                                                |
+| portfolios  | One portfolio per installation; no mutable balance                                                                                       |
+| securities  | Unique normalised ASX ticker and security name; optional manual price and UTC update timestamp                                           |
+| executions  | Append-only BUY/SELL, whole quantity, exact fill price, brokerage, cent-rounded share notional, UTC recording time and unique request ID |
+| cash_ledger | Append-only signed cash movements; one opening-capital entry and one linked movement per execution                                       |
 
-Phase 1 supports one portfolio per installation. A unique `(portfolio_id, kind)` constraint permits exactly one opening-capital entry. Update/delete triggers make ledger records immutable. Settings, portfolio and ledger creation commit together or roll back together. A repeated setup attempt cannot overwrite an existing profile. No fills or orders exist in Phase 1.
+Migration 002 copies the original ledger IDs, amounts, descriptions and timestamps into the extended ledger. A partial unique index retains exactly one opening-capital entry per portfolio. Database triggers reject execution/ledger UPDATE and DELETE, and verify that a new trade cash movement matches its execution. Foreign keys tie securities, executions, portfolios and cash entries together.
 
-Schema versioning uses SQLite `user_version`; DDL and the version update run in a transaction. New schema versions require new migrations rather than edits to released migration 001. A version newer than the app's supported schema fails startup safely.
+Migrations use SQLite user_version and transactional DDL. A newer database is refused. No migrations import or seed personal balances, securities or trades. Existing locally created Phase 1 settings/capital remain intact; this is an upgrade, not a reset.
 
-## Monetary representation
+## Exact accounting policy
 
-One AUD equals 1,000,000 integer units. This represents $10.115 exactly as 10,115,000. Profile amounts accept whole cents, bounded to A$1 billion to keep all IPC integers below JavaScript's exact-integer limit. Decimal input is parsed with BigInt before conversion to an integer number; binary floating-point monetary multiplication is avoided. Display formatting alone converts micros to AUD.
+One AUD = 1,000,000 integer units. Prices allow six decimal places; capital/brokerage are whole cents. Shares are positive integers, with no short selling or fractional shares. Monetary totals are bounded to A$1 billion and quantities to one billion shares to keep IPC values exactly representable. Wide i128 arithmetic detects oversized operations before conversion. JavaScript previews use BigInt; floating-point arithmetic is only used for display percentages and currency formatting.
 
-Opening cash is `SUM(cash_ledger.amount_micros)`; starting capital is the sum of opening-capital entries. There is no `portfolioBalance` field. In this foundation version portfolio value equals cash, while capital invested and both P&L values are zero. No market price is fabricated.
+For each fill, share notional = quantity × price, rounded to nearest cent, half up. A positive fill must round to at least one cent. A marked position may legitimately round to zero value.
 
-Phase 2 must define and test the rounding policy for execution notional, partial disposals, brokerage allocation and average-cost accounting before adding trading. Checked integer operations should guard overflow. The current BEN representation test proves `1000 - (24 × 10.115 + 3) = 754.24`; it does not execute a BUY.
+- BUY cash movement = −(rounded notional + brokerage). Cost basis increases by that cash outlay.
+- SELL cash movement = rounded notional − brokerage. Brokerage can exceed proceeds, but total cash must remain non-negative.
+- Average entry uses remaining weighted fill prices excluding brokerage, preserving sub-cent prices. Cost basis includes rounded buy notionals and buy brokerage.
+- Partial sales release cost basis in proportion to quantity, rounded half up to a micro-AUD. Remaining basis is the original basis less the released amount. A full close releases the exact remainder.
+- Realised P&L = net sell proceeds − released cost basis. It retains its sign and accumulates across closed/reopened positions.
+- Current position value = quantity × manually entered current price, rounded to cents. Unrealised P&L = marked value − remaining cost basis; its percentage uses the remaining cost basis.
+- Capital invested is remaining open-position cost basis. Cash is the ledger sum. Portfolio value is cash + marked open positions. Total return is portfolio value − opening capital, with its percentage divided by opening capital.
 
-## Future migration boundaries
+The UI formats money to cents and entry/current prices to up to six decimals. Allocation P&L may internally include fractions of a cent; final closes reconcile exactly. Unrealised P&L does not estimate future sell brokerage.
 
-Phase 2 adds securities, manual timestamped prices, immutable executions and signed ledger entry kinds linked to executions. The v1 opening-only CHECK and uniqueness constraint must be migrated to allow multiple trade entries without relaxing opening-capital uniqueness. Position quantities/cost basis should be derived from executions, with a tested average-cost policy and no silent rewriting of past fills.
+If any open position lacks a current price, total valuation, total return and unrealised P&L are unavailable. Known individual positions can still display their marked values. Fills never update a reference price implicitly; prices are explicitly manual and timestamped.
 
-Phase 3 introduces journal plans and exit reviews linked to executions. Orders/pending fills belong to Phase 5; they are not needed to represent manual executed fills. Market-data adapters and optional AI are deferred. Future price UI must show the timestamp and source. No licensing/provider selection or integration occurs here.
+Positions and P&L are replayed from executions, not stored as mutable caches. Execution history is ordered by increasing database ID, independent of equal timestamps. Snapshot reads use a consistent SQLite transaction. Trading writes use BEGIN IMMEDIATE to validate against current committed cash and holdings across app instances, and commit the execution and ledger together. Aggregate accounting limits are validated before commit.
 
-Backup/import/reset, editable settings, additional portfolios, distribution signing and migration recovery UX remain outside this slice. Filesystem paths use Tauri's platform APIs so Windows support can be added without embedding macOS paths in application logic.
+Each reviewed fill has a request ID. Retrying an identical request returns the existing result; reusing the ID with different values is rejected. The UI disables confirmation while submitting, retains the ID after an error, and requires an explicit review before an immutable fill is saved.
+
+## Validation and deferred work
+
+The database-level BEN acceptance test creates a disposable $1,000 portfolio, buys 24 BEN at $10.115 with $3 brokerage, and checks exactly $754.24 cash. It then marks, partially sells and closes the position, checking cash/P&L reconciliation. Other tests cover multiple buys, cost-allocation remainder, overselling, insufficient cash, invalid/overflow input, rollback, duplicate retries, immutable fills, migration, prices and restart persistence. Test data is not installed into the application.
+
+Phase 3 adds journal thesis, targets/invalidation, notes, linking and exit reviews. Journal currently exposes the immutable fill history. Live market-data providers, charts, pending orders, analytics and AI remain deferred. Backup/import/reset, editable profile settings, additional portfolios and signed distribution also remain outside Phase 2. Brokerage is adjustable on each fill.

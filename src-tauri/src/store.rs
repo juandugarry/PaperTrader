@@ -1,5 +1,6 @@
 use crate::domain::validate_setup;
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::trading::{self, CreateSecurity, ExecuteTrade, SetPrice, TradingSnapshot};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -20,6 +21,7 @@ pub struct Snapshot {
     pub starting_capital_micros: i64,
     pub cash_micros: i64,
     pub created_at: String,
+    pub trading: TradingSnapshot,
 }
 pub struct Store {
     connection: Connection,
@@ -38,7 +40,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 1 {
+        if version > 2 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -49,16 +51,85 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
+        if version < 2 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 2)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
         Ok(Self { connection })
     }
     pub fn snapshot(&self) -> Result<Option<Snapshot>, String> {
-        self.connection.query_row(
-            "SELECT s.display_name, s.default_brokerage_micros, s.currency, s.primary_market,
+        // Keep metadata, ledger and execution reads in one consistent read transaction.
+        let tx = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        let metadata=tx.query_row(
+            "SELECT s.display_name,s.default_brokerage_micros,s.currency,s.primary_market,
             (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1 AND kind='opening_capital'),
-            (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1), p.created_at
+            (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1),p.created_at
             FROM settings s JOIN portfolios p ON p.id=s.id WHERE s.id=1", [],
-            |r| Ok(Snapshot { display_name:r.get(0)?, default_brokerage_micros:r.get(1)?, currency:r.get(2)?, primary_market:r.get(3)?, starting_capital_micros:r.get(4)?, cash_micros:r.get(5)?, created_at:r.get(6)? })
-        ).optional().map_err(|e| e.to_string())
+            |r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?))
+        ).optional().map_err(|e|e.to_string())?;
+        let Some((
+            display_name,
+            default_brokerage_micros,
+            currency,
+            primary_market,
+            starting_capital_micros,
+            cash_micros,
+            created_at,
+        )) = metadata
+        else {
+            return Ok(None);
+        };
+        let trading = trading::read(&tx, cash_micros, starting_capital_micros)?;
+        Ok(Some(Snapshot {
+            display_name,
+            default_brokerage_micros,
+            currency,
+            primary_market,
+            starting_capital_micros,
+            cash_micros,
+            created_at,
+            trading,
+        }))
+    }
+    fn mutate(
+        &mut self,
+        action: impl FnOnce(&Connection) -> Result<(), String>,
+    ) -> Result<Snapshot, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        if !tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |r| {
+                r.get::<_, bool>(0)
+            })
+            .map_err(|e| e.to_string())?
+        {
+            return Err("Create your local profile first.".into());
+        }
+        action(&tx)?;
+        let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+        // Check all derived totals and limits before committing the mutation.
+        trading::read(&tx, cash, starting)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.snapshot()?
+            .ok_or_else(|| "Portfolio unavailable".into())
+    }
+    pub fn create_security(&mut self, input: CreateSecurity) -> Result<Snapshot, String> {
+        self.mutate(|c| trading::create_security(c, input))
+    }
+    pub fn set_price(&mut self, input: SetPrice) -> Result<Snapshot, String> {
+        self.mutate(|c| trading::set_price(c, input))
+    }
+    pub fn execute_trade(&mut self, input: ExecuteTrade) -> Result<Snapshot, String> {
+        self.mutate(|c| trading::execute(c, input))
     }
     pub fn create_profile(&mut self, input: CreateProfile) -> Result<Snapshot, String> {
         validate_setup(
@@ -166,7 +237,323 @@ mod tests {
     #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 2).unwrap();
+        c.pragma_update(None, "user_version", 3).unwrap();
         assert!(Store::from_connection(c).is_err());
+    }
+    fn prepared() -> Store {
+        let mut db = memory();
+        db.create_profile(input()).unwrap();
+        db.create_security(CreateSecurity {
+            ticker: "ben".into(),
+            name: "Bendigo and Adelaide Bank".into(),
+        })
+        .unwrap();
+        db
+    }
+    fn fill(
+        n: u64,
+        side: crate::engine::Side,
+        quantity: i64,
+        price: i64,
+        brokerage: i64,
+    ) -> ExecuteTrade {
+        ExecuteTrade {
+            request_id: format!("00000000-0000-4000-8000-{n:012x}"),
+            security_id: 1,
+            side,
+            quantity,
+            price_micros: price,
+            brokerage_micros: brokerage,
+        }
+    }
+    #[test]
+    fn ben_buy_partial_sell_and_close_reconcile_cash_and_pnl() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        let s = db
+            .execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.cash_micros, 754_240_000);
+        assert_eq!(s.trading.positions[0].quantity, 24);
+        assert_eq!(s.trading.positions[0].cost_basis_micros, 245_760_000);
+        assert_eq!(s.trading.positions[0].average_entry_micros, 10_115_000);
+        assert_eq!(s.trading.portfolio_value_micros, None);
+        let s = db
+            .set_price(SetPrice {
+                security_id: 1,
+                price_micros: 10_600_000,
+            })
+            .unwrap();
+        assert_eq!(s.trading.portfolio_value_micros, Some(1_008_640_000));
+        assert_eq!(s.trading.unrealised_pnl_micros, Some(8_640_000));
+        assert!(s.trading.positions[0].price_updated_at.is_some());
+        let s = db
+            .execute_trade(fill(2, SELL, 12, 10_600_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.cash_micros, 878_440_000);
+        assert_eq!(s.trading.realised_pnl_micros, 1_320_000);
+        assert_eq!(s.trading.capital_invested_micros, 122_880_000);
+        assert_eq!(s.trading.unrealised_pnl_micros, Some(4_320_000));
+        assert_eq!(
+            s.trading.total_return_micros,
+            Some(s.trading.realised_pnl_micros + s.trading.unrealised_pnl_micros.unwrap())
+        );
+        let s = db
+            .execute_trade(fill(3, SELL, 12, 9_950_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.cash_micros, 994_840_000);
+        assert!(s.trading.positions.is_empty());
+        assert_eq!(s.trading.realised_pnl_micros, -5_160_000);
+        assert_eq!(s.trading.brokerage_paid_micros, 9_000_000);
+        assert_eq!(s.trading.total_return_micros, Some(-5_160_000));
+        assert_eq!(s.trading.executions.len(), 3);
+    }
+    #[test]
+    fn rejects_overselling_insufficient_cash_and_invalid_trade_without_writes() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        for order in [
+            fill(1, SELL, 1, 10_000_000, 0),
+            fill(2, BUY, 100, 10_000_000, 3_000_000),
+            fill(3, BUY, 0, 10_000_000, 0),
+            fill(4, BUY, 1, 0, 0),
+            fill(5, BUY, 1, 10_000_000, -1),
+        ] {
+            assert!(db.execute_trade(order).is_err());
+        }
+        let s = db.snapshot().unwrap().unwrap();
+        assert!(s.trading.executions.is_empty());
+        assert_eq!(s.cash_micros, 1_000_000_000);
+        db.execute_trade(fill(6, BUY, 1, 10_000_000, 0)).unwrap();
+        assert!(db.execute_trade(fill(7, SELL, 2, 10_000_000, 0)).is_err());
+        assert_eq!(db.snapshot().unwrap().unwrap().trading.executions.len(), 1);
+    }
+    #[test]
+    fn duplicate_requests_are_idempotent_and_conflicting_reuse_is_rejected() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        let s = db
+            .execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.cash_micros, 754_240_000);
+        assert_eq!(s.trading.executions.len(), 1);
+        assert!(db
+            .execute_trade(fill(1, BUY, 25, 10_115_000, 3_000_000))
+            .is_err());
+    }
+    #[test]
+    fn failed_cash_write_rolls_back_execution_and_executions_are_immutable() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.connection.execute_batch("CREATE TRIGGER fail_trade BEFORE INSERT ON cash_ledger WHEN NEW.kind='BUY' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(db.execute_trade(fill(1, BUY, 1, 10_000_000, 0)).is_err());
+        let count: i64 = db
+            .connection
+            .query_row("SELECT COUNT(*) FROM executions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        db.connection
+            .execute_batch("DROP TRIGGER fail_trade;")
+            .unwrap();
+        db.execute_trade(fill(1, BUY, 1, 10_000_000, 0)).unwrap();
+        assert!(db
+            .connection
+            .execute("UPDATE executions SET price_micros=1", [])
+            .is_err());
+        assert!(db.connection.execute("DELETE FROM executions", []).is_err());
+        assert!(db
+            .connection
+            .execute(
+                "UPDATE cash_ledger SET amount_micros=1 WHERE execution_id IS NOT NULL",
+                []
+            )
+            .is_err());
+    }
+    #[test]
+    fn price_and_security_validation_and_small_mark_are_safe() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        assert!(db
+            .create_security(CreateSecurity {
+                ticker: "BEN".into(),
+                name: "Duplicate".into()
+            })
+            .is_err());
+        assert!(db
+            .create_security(CreateSecurity {
+                ticker: "bad/ticker".into(),
+                name: "Invalid".into()
+            })
+            .is_err());
+        assert!(db
+            .set_price(SetPrice {
+                security_id: 1,
+                price_micros: 0
+            })
+            .is_err());
+        assert!(db
+            .set_price(SetPrice {
+                security_id: 99,
+                price_micros: 10_000_000
+            })
+            .is_err());
+        db.execute_trade(fill(1, BUY, 1, 1_000_000, 0)).unwrap();
+        let s = db
+            .set_price(SetPrice {
+                security_id: 1,
+                price_micros: 1,
+            })
+            .unwrap();
+        assert_eq!(s.trading.positions[0].value_micros, Some(0));
+        assert_eq!(s.trading.unrealised_pnl_micros, Some(-1_000_000));
+    }
+    #[test]
+    fn migration_preserves_v1_profile_and_opening_ledger_without_seeding_trades() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(include_str!("../migrations/001_foundation.sql"))
+            .unwrap();
+        c.execute_batch("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market) VALUES(1,'Legacy',3000000,'AUD','ASX'); INSERT INTO portfolios(id,name) VALUES(1,'My ASX portfolio'); INSERT INTO cash_ledger(id,portfolio_id,kind,amount_micros,description) VALUES(42,1,'opening_capital',1000000000,'Starting virtual capital'); PRAGMA user_version=1;").unwrap();
+        let db = Store::from_connection(c).unwrap();
+        let s = db.snapshot().unwrap().unwrap();
+        assert_eq!(s.display_name, "Legacy");
+        assert_eq!(s.cash_micros, 1_000_000_000);
+        assert!(s.trading.securities.is_empty());
+        assert!(s.trading.executions.is_empty());
+        let id: i64 = db
+            .connection
+            .query_row("SELECT id FROM cash_ledger", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(id, 42);
+    }
+    fn database_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "papertrader-{label}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+    #[test]
+    fn executions_prices_and_positions_persist_across_restart() {
+        use crate::engine::Side::*;
+        let path = database_path("restart");
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            db.create_security(CreateSecurity {
+                ticker: "BEN".into(),
+                name: "Bank".into(),
+            })
+            .unwrap();
+            db.execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+                .unwrap();
+            db.set_price(SetPrice {
+                security_id: 1,
+                price_micros: 10_600_000,
+            })
+            .unwrap();
+        }
+        {
+            let db = Store::open(&path).unwrap();
+            let s = db.snapshot().unwrap().unwrap();
+            assert_eq!(s.cash_micros, 754_240_000);
+            assert_eq!(s.trading.positions[0].quantity, 24);
+            assert_eq!(s.trading.executions.len(), 1);
+            assert_eq!(s.trading.portfolio_value_micros, Some(1_008_640_000));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn another_app_instance_cannot_spend_stale_cash() {
+        use crate::engine::Side::*;
+        let path = database_path("two-apps");
+        {
+            let mut first = Store::open(&path).unwrap();
+            first.create_profile(input()).unwrap();
+            first
+                .create_security(CreateSecurity {
+                    ticker: "BEN".into(),
+                    name: "Bank".into(),
+                })
+                .unwrap();
+            let mut second = Store::open(&path).unwrap();
+            assert_eq!(
+                second.snapshot().unwrap().unwrap().cash_micros,
+                1_000_000_000
+            );
+            first
+                .execute_trade(fill(1, BUY, 80, 10_000_000, 3_000_000))
+                .unwrap();
+            assert!(second
+                .execute_trade(fill(2, BUY, 30, 10_000_000, 3_000_000))
+                .is_err());
+            assert_eq!(second.snapshot().unwrap().unwrap().cash_micros, 197_000_000);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn multi_security_valuation_and_closed_position_realised_pnl_are_aggregated() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.create_security(CreateSecurity {
+            ticker: "ABC".into(),
+            name: "Another company".into(),
+        })
+        .unwrap();
+        db.execute_trade(fill(1, BUY, 10, 10_000_000, 0)).unwrap();
+        let mut order = fill(2, BUY, 20, 5_000_000, 0);
+        order.security_id = 2;
+        db.execute_trade(order).unwrap();
+        let s = db
+            .set_price(SetPrice {
+                security_id: 1,
+                price_micros: 11_000_000,
+            })
+            .unwrap();
+        assert_eq!(s.cash_micros, 800_000_000);
+        assert_eq!(s.trading.capital_invested_micros, 200_000_000);
+        assert_eq!(s.trading.portfolio_value_micros, None);
+        let s = db
+            .set_price(SetPrice {
+                security_id: 2,
+                price_micros: 4_000_000,
+            })
+            .unwrap();
+        assert_eq!(s.trading.portfolio_value_micros, Some(990_000_000));
+        assert_eq!(s.trading.unrealised_pnl_micros, Some(-10_000_000));
+        let s = db.execute_trade(fill(3, SELL, 10, 11_000_000, 0)).unwrap();
+        assert_eq!(s.trading.realised_pnl_micros, 10_000_000);
+        assert_eq!(s.trading.positions.len(), 1);
+        assert_eq!(s.trading.total_return_micros, Some(-10_000_000));
+        assert_eq!(
+            s.trading.realised_pnl_micros + s.trading.unrealised_pnl_micros.unwrap(),
+            -10_000_000
+        );
+    }
+    #[test]
+    fn oversized_manual_valuation_is_rejected_without_changing_prior_price() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        db.set_price(SetPrice {
+            security_id: 1,
+            price_micros: 10_600_000,
+        })
+        .unwrap();
+        assert!(db
+            .set_price(SetPrice {
+                security_id: 1,
+                price_micros: crate::domain::MAX_MONEY
+            })
+            .is_err());
+        assert_eq!(
+            db.snapshot().unwrap().unwrap().trading.securities[0].current_price_micros,
+            Some(10_600_000)
+        );
     }
 }

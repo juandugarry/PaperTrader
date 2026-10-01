@@ -19,3 +19,16 @@ export function formatMoney(micros: number): string {
     currencyDisplay: "symbol",
   }).format(micros / MICROS_PER_AUD);
 }
+export function formatPrice(micros: number | null): string {
+  if (micros === null) return "Not priced";
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency: "AUD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(micros / MICROS_PER_AUD);
+}
+export const moneyText = (micros: number) =>
+  (micros / MICROS_PER_AUD).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+export const percent = (value: number | null, basis: number) =>
+  value === null ? "Unavailable" : `${((value / basis) * 100).toFixed(2)}%`;

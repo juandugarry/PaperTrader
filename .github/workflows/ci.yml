@@ -1,4 +1,4 @@
-name: Phase 1 checks
+name: PaperTrader checks
 on:
   workflow_dispatch:
   push:

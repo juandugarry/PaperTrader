@@ -8,6 +8,9 @@ vi.mock("./api", () => ({
   desktopAvailable: true,
   getSnapshot: vi.fn(),
   createProfile: vi.fn(),
+  createSecurity: vi.fn(),
+  setPrice: vi.fn(),
+  executeTrade: vi.fn(),
 }));
 const portfolio: Snapshot = {
   displayName: "Alex",
@@ -17,13 +20,24 @@ const portfolio: Snapshot = {
   startingCapitalMicros: 1_000_000_000,
   cashMicros: 1_000_000_000,
   createdAt: "2026-10-01T00:00:00Z",
+  trading: {
+    securities: [],
+    positions: [],
+    executions: [],
+    capitalInvestedMicros: 0,
+    realisedPnlMicros: 0,
+    brokeragePaidMicros: 0,
+    unrealisedPnlMicros: 0,
+    portfolioValueMicros: 1_000_000_000,
+    totalReturnMicros: 0,
+  },
 };
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(getSnapshot).mockResolvedValue(null);
 });
 afterEach(cleanup);
-describe("Phase 1 user flow through the IPC boundary", () => {
+describe("Profile and navigation through the IPC boundary", () => {
   it("creates a virtual portfolio with exact monetary values and navigates all areas", async () => {
     vi.mocked(createProfile).mockResolvedValue(portfolio);
     const user = userEvent.setup();
