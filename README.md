@@ -1,8 +1,8 @@
 # PaperTrader
 
-A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
+A local-first desktop workspace for learning ASX paper trading with fictional money. Built for macOS and Windows with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
 
-## Phase 4 · 0.4.0 · ASX end-of-day prices
+## Phase 4 · 0.4.1 · ASX directory, charts and Windows
 
 - **Settings → ASX end-of-day prices:** create a free EODHD account and save its API key in macOS Keychain. No key is stored in SQLite, localStorage or the repository.
 - **Trade → select a stock → Refresh price:** fetch its latest published closing price and up to one year of daily history. Refresh all updates your local security list when enough allowance remains.
@@ -13,6 +13,22 @@ A local-first desktop workspace for learning ASX paper trading with fictional mo
 One stock-history request uses one allowance slot. Reserved slots remain counted if a batch stops early, and the quota counter survives profile reset. EODHD may count usage from other applications too. End-of-day data usually publishes 2–3 hours after market close; it is not an intraday quote. This integration is for private personal use, without shared keys or redistribution of provider data. See [provider terms and implementation](docs/market-data.md).
 
 **First use on your Mac:** download the latest successful Actions artifact, open Settings, create the free provider account, paste your key and allow macOS Keychain access when prompted. Add an ASX ticker such as your chosen stock’s local code (no `.AU` suffix), select it in Trade and refresh. Confirm your key has ASX entitlement; no private ASX key was available for cloud validation.
+
+## Stocks directory
+
+Open **Stocks → Load ASX directory** after saving your EODHD key in Settings. One API request retrieves the provider’s active ASX listing directory, with company/security names, tickers and listing types. Search names or tickers, filter shares/ETFs/other types, and use **Add to Trade** to add an AUD security to your local workspace. It does not place a trade or retrieve a price.
+
+The directory is cached in SQLite for offline browsing. Updating it is explicit and shares the 20-request daily allowance and one-minute cooldown with price retrieval. Failed updates retain the previous directory. Reset clears the cache. Coverage and ASX entitlement depend on EODHD; the public demo key cannot retrieve this exchange directory.
+
+## Candlestick charts
+
+In Trade, refresh a stock once, then switch its daily chart between **Line** and **Candlesticks**. Wicks show the actual daily high/low; bodies show open/close. Green means close at or above open, red means below open. Explore dates for the four prices. Candles show unadjusted OHLC; the line chart retains its split/dividend adjustment option. Older close-only caches still display lines until refreshed; fetching candles costs no additional request.
+
+## Windows installer
+
+Download **PaperTrader-Windows** from the latest successful [GitHub Actions run](https://github.com/juandugarry/PaperTrader/actions), extract the artifact ZIP and run `PaperTrader_0.4.1_x64-setup.exe` (the filename may include a language suffix). This is an unsigned Windows x64 installer; Windows may show a publisher warning. It installs the desktop app and uses WebView2. The standard installer offers shortcuts. Market keys are stored in Windows Credential Manager, and each Windows user has their own local SQLite portfolio. macOS users continue to download **PaperTrader-macOS**.
+
+For development on Windows, install Node 24, the repository’s pinned Rust toolchain, Microsoft C++ Build Tools with the desktop C++ workload, and WebView2. Run `npm ci`, then `npm run desktop`. Create the installer with `npm run tauri -- build --bundles nsis` on Windows. CI tests and builds both supported platforms; no cross compilation is required on your Mac.
 
 ## Reset and notepad
 

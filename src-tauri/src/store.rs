@@ -55,7 +55,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 5 {
+        if version > 7 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -95,6 +95,22 @@ impl Store {
             tx.execute_batch(include_str!("../migrations/005_market_data.sql"))
                 .map_err(|e| e.to_string())?;
             tx.pragma_update(None, "user_version", 5)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        if version < 6 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/006_directory.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 6)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        if version < 7 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/007_candles.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 7)
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
@@ -231,7 +247,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Self::check_profile(&tx, profile_id)?;
         // Explicit whole-profile reset only. Ordinary fill and journal edits retain their immutability triggers.
-        tx.execute_batch("DROP TABLE daily_prices; DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
+        tx.execute_batch("DROP TABLE asx_directory; DROP TABLE daily_prices; DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
         tx.execute_batch(include_str!("../migrations/001_foundation.sql"))
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
@@ -242,7 +258,11 @@ impl Store {
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/005_market_data.sql"))
             .map_err(|e| e.to_string())?;
-        tx.pragma_update(None, "user_version", 5)
+        tx.execute_batch(include_str!("../migrations/006_directory.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/007_candles.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.pragma_update(None, "user_version", 7)
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -263,13 +283,16 @@ impl Store {
             .map_err(|e| e.to_string())?;
         for security in securities {
             let (security_id, fetched_at) = security.map_err(|e| e.to_string())?;
-            let mut q = c.prepare("SELECT session_date,close_micros,adjusted_close_micros FROM daily_prices WHERE security_id=?1 ORDER BY session_date").map_err(|e|e.to_string())?;
+            let mut q = c.prepare("SELECT session_date,close_micros,adjusted_close_micros,open_micros,high_micros,low_micros FROM daily_prices WHERE security_id=?1 ORDER BY session_date").map_err(|e|e.to_string())?;
             let prices = q
                 .query_map([security_id], |r| {
                     Ok(DailyPrice {
                         session_date: r.get(0)?,
                         close_micros: r.get(1)?,
                         adjusted_close_micros: r.get(2)?,
+                        open_micros: r.get(3)?,
+                        high_micros: r.get(4)?,
+                        low_micros: r.get(5)?,
                     })
                 })
                 .map_err(|e| e.to_string())?
@@ -291,12 +314,7 @@ impl Store {
     pub fn verify_profile(&self, profile_id: &str) -> Result<(), String> {
         Self::check_profile(&self.connection, profile_id)
     }
-    pub fn begin_refresh(&mut self, profile_id: &str, ids: Vec<i64>) -> Result<RefreshJob, String> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| e.to_string())?;
-        Self::check_profile(&tx, profile_id)?;
+    fn reserve_market_requests(tx: &Connection, count: i64) -> Result<String, String> {
         let (active, started): (Option<String>, Option<i64>) = tx
             .query_row(
                 "SELECT market_refresh_id,market_refresh_started FROM settings WHERE id=1",
@@ -306,18 +324,12 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         if active.is_some() && started.is_some_and(|t| now - t < 600) {
-            return Err("A price refresh is already running. Wait for it to finish.".into());
+            return Err("A market-data refresh is already running. Wait for it to finish.".into());
         }
         if started.is_some_and(|t| now - t < 60) {
             return Err(
-                "Wait one minute between price refreshes to protect your allowance.".into(),
+                "Wait one minute between market-data refreshes to protect your allowance.".into(),
             );
-        }
-        let mut unique = ids;
-        unique.sort_unstable();
-        unique.dedup();
-        if unique.is_empty() || unique.len() > 20 {
-            return Err("Choose between 1 and 20 securities to refresh.".into());
         }
         let used: i64 = tx
             .query_row(
@@ -326,8 +338,99 @@ impl Store {
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if used + unique.len() as i64 > market::DAILY_LIMIT {
+        if used + count > market::DAILY_LIMIT {
             return Err(format!("Only {} local requests remain today. Refresh fewer securities or wait until tomorrow (UTC).",market::DAILY_LIMIT-used));
+        }
+        let id: String = tx
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO market_usage(utc_day,requests) VALUES(date('now'),?1) ON CONFLICT(utc_day) DO UPDATE SET requests=requests+excluded.requests",[count]).map_err(|e|e.to_string())?;
+        tx.execute(
+            "DELETE FROM market_usage WHERE utc_day<date('now','-7 days')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE settings SET market_refresh_id=?1,market_refresh_started=?2 WHERE id=1",
+            params![id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+    pub fn directory(&self, profile_id: &str) -> Result<crate::directory::Directory, String> {
+        Self::check_profile(&self.connection, profile_id)?;
+        let row: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT body,fetched_at FROM asx_directory WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match row {
+            Some((body, fetched_at)) => Ok(crate::directory::Directory {
+                entries: serde_json::from_str(&body).map_err(|_| "Invalid cached directory")?,
+                fetched_at: Some(fetched_at),
+            }),
+            None => Ok(crate::directory::Directory {
+                entries: vec![],
+                fetched_at: None,
+            }),
+        }
+    }
+    pub fn begin_directory(&mut self, profile_id: &str) -> Result<String, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let id = Self::reserve_market_requests(&tx, 1)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+    pub fn finish_directory(
+        &mut self,
+        profile_id: &str,
+        job: &str,
+        result: Result<Vec<crate::directory::Listing>, String>,
+    ) -> Result<crate::directory::Directory, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let active: Option<String> = tx
+            .query_row(
+                "SELECT market_refresh_id FROM settings WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active.as_deref() != Some(job) {
+            return Err("This directory refresh is no longer active.".into());
+        }
+        if let Ok(ref entries) = result {
+            let body = serde_json::to_string(entries).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO asx_directory(id,body,fetched_at) VALUES(1,?1,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(id) DO UPDATE SET body=excluded.body,fetched_at=excluded.fetched_at", [body]).map_err(|e| e.to_string())?;
+        }
+        tx.execute("UPDATE settings SET market_refresh_id=NULL WHERE id=1", [])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        result?;
+        self.directory(profile_id)
+    }
+    pub fn begin_refresh(&mut self, profile_id: &str, ids: Vec<i64>) -> Result<RefreshJob, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let mut unique = ids;
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.is_empty() || unique.len() > 20 {
+            return Err("Choose between 1 and 20 securities to refresh.".into());
         }
         let mut securities = Vec::new();
         for id in unique {
@@ -348,20 +451,7 @@ impl Store {
                 .ok_or("Security not found.")?;
             securities.push(security);
         }
-        let id: String = tx
-            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        tx.execute("INSERT INTO market_usage(utc_day,requests) VALUES(date('now'),?1) ON CONFLICT(utc_day) DO UPDATE SET requests=requests+excluded.requests",[securities.len() as i64]).map_err(|e|e.to_string())?;
-        tx.execute(
-            "DELETE FROM market_usage WHERE utc_day<date('now','-7 days')",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE settings SET market_refresh_id=?1,market_refresh_started=?2 WHERE id=1",
-            params![id, now],
-        )
-        .map_err(|e| e.to_string())?;
+        let id = Self::reserve_market_requests(&tx, securities.len() as i64)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(RefreshJob {
             profile_id: profile_id.into(),
@@ -402,7 +492,7 @@ impl Store {
                 if old_date.is_some_and(|date| date>latest.session_date) { return Err("EODHD returned an older session than the cached price. Cached prices kept.".into()); }
                 tx.execute("DELETE FROM daily_prices WHERE security_id=?1",[security.id]).map_err(|e|e.to_string())?;
                 for p in &prices {
-                    tx.execute("INSERT INTO daily_prices(security_id,session_date,close_micros,adjusted_close_micros) VALUES(?1,?2,?3,?4)",params![security.id,p.session_date,p.close_micros,p.adjusted_close_micros]).map_err(|e|e.to_string())?;
+                    tx.execute("INSERT INTO daily_prices(security_id,session_date,close_micros,adjusted_close_micros,open_micros,high_micros,low_micros) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![security.id,p.session_date,p.close_micros,p.adjusted_close_micros,p.open_micros,p.high_micros,p.low_micros]).map_err(|e|e.to_string())?;
                 }
                 tx.execute("UPDATE securities SET current_price_micros=?1,price_as_of=?2,price_source='eodhd',price_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_fetched_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_error=NULL,price_version=price_version+1 WHERE id=?3",params![latest.close_micros,latest.session_date,security.id]).map_err(|e|e.to_string())?;
                 let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
@@ -464,6 +554,91 @@ mod tests {
     }
     fn memory() -> Store {
         Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
+    }
+    #[test]
+    fn v5_close_only_cache_migrates_without_fabricating_candles() {
+        let c = Connection::open_in_memory().unwrap();
+        for migration in [
+            include_str!("../migrations/001_foundation.sql"),
+            include_str!("../migrations/002_manual_trading.sql"),
+            include_str!("../migrations/003_trading_journal.sql"),
+            include_str!("../migrations/004_notes_and_reset.sql"),
+            include_str!("../migrations/005_market_data.sql"),
+        ] {
+            c.execute_batch(migration).unwrap();
+        }
+        c.execute_batch("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market) VALUES(1,'Legacy',3000000,'AUD','ASX'); INSERT INTO portfolios(id,name) VALUES(1,'Portfolio'); INSERT INTO cash_ledger(portfolio_id,kind,amount_micros,description) VALUES(1,'opening_capital',1000000000,'Starting capital'); INSERT INTO securities(id,ticker,name,market_fetched_at) VALUES(1,'BHP','BHP Group','2026-10-01T00:00:00Z'); INSERT INTO daily_prices VALUES(1,'2026-09-30',10000000,9900000); UPDATE settings SET profile_id=lower(hex(randomblob(16))); PRAGMA user_version=5;").unwrap();
+        let db = Store::from_connection(c).unwrap();
+        let snapshot = db.snapshot().unwrap().unwrap();
+        assert_eq!(snapshot.cash_micros, 1_000_000_000);
+        let price = &snapshot.market.histories[0].prices[0];
+        assert_eq!(price.close_micros, 10_000_000);
+        assert_eq!(price.open_micros, None);
+        assert_eq!(price.high_micros, None);
+        assert_eq!(price.low_micros, None);
+        assert!(db
+            .directory(&snapshot.profile_id)
+            .unwrap()
+            .entries
+            .is_empty());
+    }
+    #[test]
+    fn directory_shares_quota_preserves_cache_and_rejects_reset_races() {
+        let mut db = prepared();
+        let id = profile(&db);
+        let before = db.snapshot().unwrap().unwrap();
+        assert!(db.directory(&id).unwrap().entries.is_empty());
+        let job = db.begin_directory(&id).unwrap();
+        assert!(db.begin_refresh(&id, vec![1]).is_err());
+        let entries = crate::directory::parse(
+            br#"[{"Code":"BHP","Name":"BHP Group","Type":"Common Stock","Currency":"AUD"}]"#,
+        )
+        .unwrap();
+        db.finish_directory(&id, &job, Ok(entries)).unwrap();
+        let after = db.snapshot().unwrap().unwrap();
+        assert_eq!(after.cash_micros, before.cash_micros);
+        assert_eq!(
+            after.trading.securities.len(),
+            before.trading.securities.len()
+        );
+        assert_eq!(after.market.requests_today, 1);
+        allow_next_refresh(&db);
+        let job = db.begin_directory(&id).unwrap();
+        assert!(db
+            .finish_directory(&id, &job, Err("Connection failed".into()))
+            .is_err());
+        assert_eq!(db.directory(&id).unwrap().entries[0].ticker, "BHP");
+        assert!(!db.snapshot().unwrap().unwrap().market.refreshing);
+        allow_next_refresh(&db);
+        let job = db.begin_directory(&id).unwrap();
+        db.reset_profile(&id, "RESET").unwrap();
+        let fresh = db.create_profile(input()).unwrap();
+        assert!(db.finish_directory(&id, &job, Ok(vec![])).is_err());
+        assert!(db.directory(&fresh.profile_id).unwrap().entries.is_empty());
+        assert_eq!(fresh.market.requests_today, 3);
+    }
+    #[test]
+    fn directory_persists_offline_across_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "papertrader-directory-{}.sqlite3",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let id;
+        {
+            let mut db = Store::open(&path).unwrap();
+            id = db.create_profile(input()).unwrap().profile_id;
+            let job = db.begin_directory(&id).unwrap();
+            let entries = crate::directory::parse(
+                br#"[{"Code":"BHP","Name":"BHP Group","Type":"Common Stock","Currency":"AUD"}]"#,
+            )
+            .unwrap();
+            db.finish_directory(&id, &job, Ok(entries)).unwrap();
+        }
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.directory(&id).unwrap().entries[0].name, "BHP Group");
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
     #[test]
     fn creates_profile_and_derives_cash_from_ledger() {
@@ -533,7 +708,7 @@ mod tests {
     #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 6).unwrap();
+        c.pragma_update(None, "user_version", 8).unwrap();
         assert!(Store::from_connection(c).is_err());
     }
     fn prepared() -> Store {
@@ -1294,6 +1469,9 @@ mod tests {
         vec![DailyPrice {
             session_date: date.into(),
             close_micros: close,
+            open_micros: Some(close),
+            high_micros: Some(close + 1),
+            low_micros: Some(close - 1),
             adjusted_close_micros: Some(close - 1000),
         }]
     }

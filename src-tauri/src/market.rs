@@ -11,6 +11,9 @@ pub const DAILY_LIMIT: i64 = 20;
 pub struct DailyPrice {
     pub session_date: String,
     pub close_micros: i64,
+    pub open_micros: Option<i64>,
+    pub high_micros: Option<i64>,
+    pub low_micros: Option<i64>,
     pub adjusted_close_micros: Option<i64>,
 }
 #[derive(Debug, Serialize)]
@@ -120,9 +123,25 @@ pub fn parse_history(body: &[u8], today: NaiveDate) -> Result<Vec<DailyPrice>, S
             None | Some(Value::Null) => None,
             Some(v) => Some(price(v)?),
         };
+        let ohlc = ["open", "high", "low"].map(|field| match row.get(field) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => price(value).map(Some),
+        });
+        let [open, high, low] = ohlc;
+        let (open, high, low) = (open?, high?, low?);
+        if let (Some(o), Some(h), Some(l)) = (open, high, low) {
+            if l > o.min(close) || h < o.max(close) || l > h {
+                return Err("Invalid daily price range. Cached prices kept.".into());
+            }
+        } else if open.is_some() || high.is_some() || low.is_some() {
+            return Err("Incomplete daily OHLC data. Cached prices kept.".into());
+        }
         prices.push(DailyPrice {
             session_date: date.into(),
             close_micros: close,
+            open_micros: open,
+            high_micros: high,
+            low_micros: low,
             adjusted_close_micros: adjusted,
         });
     }
@@ -135,7 +154,7 @@ pub fn parse_history(body: &[u8], today: NaiveDate) -> Result<Vec<DailyPrice>, S
     }
     Ok(prices)
 }
-fn response_error(status: u16) -> &'static str {
+pub(crate) fn response_error(status: u16) -> &'static str {
     match status {
         401 => "EODHD rejected the API key. Check it in Settings.",
         403 => "This EODHD key is not entitled to this ASX symbol. Check your account coverage.",
@@ -196,6 +215,18 @@ fn fetch_url(url: &str, key: &str) -> Result<Vec<DailyPrice>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn daily_ohlc_is_exact_and_invalid_wicks_are_rejected() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let body = r#"[{"date":"2026-09-30","open":10.1,"high":11.2,"low":9.3,"close":10.115}]"#;
+        let rows = parse_history(body.as_bytes(), date).unwrap();
+        assert_eq!(rows[0].open_micros, Some(10_100_000));
+        assert_eq!(rows[0].high_micros, Some(11_200_000));
+        assert_eq!(rows[0].low_micros, Some(9_300_000));
+        assert!(parse_history(body.replace("11.2", "10.0").as_bytes(), date).is_err());
+        assert!(parse_history(body.replace("9.3", "10.2").as_bytes(), date).is_err());
+        assert!(parse_history(body.replace("\"open\":10.1,", "").as_bytes(), date).is_err());
+    }
     #[test]
     fn parses_exact_closes_adjustment_dates_and_sorts() {
         let d = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();

@@ -9,13 +9,19 @@ use std::sync::Mutex;
 pub struct KeyStatus {
     pub configured: bool,
     pub supported: bool,
+    pub storage: &'static str,
 }
 pub fn market_key_status(store: &Mutex<Store>, profile_id: String) -> Result<KeyStatus, String> {
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
     Ok(KeyStatus {
         configured: credentials::load(&profile_id)?.is_some(),
-        supported: cfg!(target_os = "macos"),
+        supported: cfg!(any(target_os = "macos", target_os = "windows")),
+        storage: if cfg!(target_os = "windows") {
+            "Windows Credential Manager"
+        } else {
+            "macOS Keychain"
+        },
     })
 }
 pub fn save_market_key(
@@ -99,7 +105,38 @@ pub fn open_market_signup() -> Result<(), String> {
         Err("Could not open your browser. Visit eodhd.com to create an account.".into())
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn open_market_signup() -> Result<(), String> {
+    let status = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", "https://eodhd.com/register"])
+        .status()
+        .map_err(|_| "Could not open browser. Visit eodhd.com to create an account.")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Could not open browser. Visit eodhd.com to create an account.".into())
+    }
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn open_market_signup() -> Result<(), String> {
     Err("Visit eodhd.com in your browser to create an account.".into())
+}
+
+pub fn refresh_asx_directory(
+    store: &Mutex<Store>,
+    profile_id: String,
+) -> Result<crate::directory::Directory, String> {
+    let (job, key) = {
+        let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
+        db.verify_profile(&profile_id)?;
+        let key =
+            credentials::load(&profile_id)?.ok_or("Add your EODHD API key in Settings first.")?;
+        market::validate_key(&key)?;
+        (db.begin_directory(&profile_id)?, key)
+    };
+    let result = crate::directory::fetch(&key);
+    store
+        .lock()
+        .map_err(|_| "Database lock unavailable")?
+        .finish_directory(&profile_id, &job, result)
 }

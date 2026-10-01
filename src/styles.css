@@ -1302,3 +1302,29 @@ select:focus-visible {
     gap: 10px;
   }
 }
+
+.directory-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.directory-heading button {
+  flex-shrink: 0;
+}
+.directory-filters {
+  margin: 24px 0;
+}
+.directory-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 24px;
+}
+@media (max-width: 800px) {
+  .directory-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

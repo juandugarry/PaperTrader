@@ -185,6 +185,9 @@ export async function resetProfile(confirmation: string): Promise<void> {
 export interface DailyPrice {
   sessionDate: string;
   closeMicros: number;
+  openMicros?: number | null;
+  highMicros?: number | null;
+  lowMicros?: number | null;
   adjustedCloseMicros: number | null;
 }
 export interface PriceHistory {
@@ -199,6 +202,7 @@ export interface MarketSnapshot {
   histories: PriceHistory[];
 }
 export interface MarketKeyStatus {
+  storage?: string;
   configured: boolean;
   supported: boolean;
 }
@@ -220,3 +224,18 @@ export const refreshMarketPrices = (securityIds: number[]) =>
   }).then(remember);
 
 export const openMarketSignup = () => invoke<void>("open_market_signup");
+
+export interface AsxListing {
+  ticker: string;
+  name: string;
+  kind: string;
+  currency: string;
+}
+export interface AsxDirectory {
+  entries: AsxListing[];
+  fetchedAt: string | null;
+}
+export const getAsxDirectory = () =>
+  invoke<AsxDirectory>("get_asx_directory", { profileId: activeProfile() });
+export const refreshAsxDirectory = () =>
+  invoke<AsxDirectory>("refresh_asx_directory", { profileId: activeProfile() });

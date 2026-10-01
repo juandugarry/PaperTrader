@@ -204,3 +204,45 @@ describe("EODHD setup and cached reference data", () => {
     );
   });
 });
+
+it("draws real daily candle wicks and bodies, with OHLC readings and close-only fallback", async () => {
+  const candles = structuredClone(history);
+  candles.prices[0] = {
+    ...candles.prices[0],
+    openMicros: 10_000_000,
+    highMicros: 11_000_000,
+    lowMicros: 9_000_000,
+  };
+  candles.prices[1] = {
+    ...candles.prices[1],
+    openMicros: 11_000_000,
+    highMicros: 12_000_000,
+    lowMicros: 10_000_000,
+  };
+  const { container, rerender } = render(
+    <PriceChart ticker="BEN" history={candles} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Candlesticks" }));
+  const svg = screen.getByRole("img", { name: /daily candlesticks/ });
+  expect(svg.querySelectorAll("g rect")).toHaveLength(2);
+  expect(svg.querySelectorAll("g line")).toHaveLength(2);
+  expect(svg.querySelectorAll("polyline")).toHaveLength(0);
+  expect(container.textContent).toContain(
+    "Open $11.00 · High $12.00 · Low $10.00 · Close $10.60",
+  );
+  expect(
+    screen
+      .getByLabelText("Adjust for splits and dividends")
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await userEvent.click(
+    screen.getByRole("button", { name: "Line" }),
+  );
+  expect(screen.getByRole("img").querySelectorAll("polyline")).toHaveLength(1);
+  rerender(<PriceChart ticker="BEN" history={history} />);
+  expect(
+    screen
+      .getByRole("button", { name: "Candlesticks" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+});

@@ -1,4 +1,5 @@
 mod credentials;
+pub mod directory;
 pub mod domain;
 pub mod engine;
 pub mod journal;
@@ -164,6 +165,28 @@ mod desktop {
         .map_err(|_| "Unable to reset profile".to_string())?
     }
     #[tauri::command]
+    fn get_asx_directory(
+        profile_id: String,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<crate::directory::Directory, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .directory(&profile_id)
+    }
+    #[tauri::command]
+    async fn refresh_asx_directory(
+        profile_id: String,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<crate::directory::Directory, String> {
+        let store = store.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            market_service::refresh_asx_directory(store.as_ref(), profile_id)
+        })
+        .await
+        .map_err(|_| "Directory refresh stopped unexpectedly.".to_string())?
+    }
+    #[tauri::command]
     fn open_market_signup() -> Result<(), String> {
         market_service::open_market_signup()
     }
@@ -191,7 +214,9 @@ mod desktop {
                 save_market_key,
                 remove_market_key,
                 refresh_market_prices,
-                open_market_signup
+                open_market_signup,
+                get_asx_directory,
+                refresh_asx_directory
             ])
             .run(tauri::generate_context!())
             .expect("Unable to start PaperTrader");

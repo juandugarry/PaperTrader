@@ -54,3 +54,17 @@ No user's key is configured in this cloud environment. A private ASX request, ma
 ## Next-build note
 
 The user suggested limiting refreshes to about three. Each installation uses its own user-entered EODHD key; no provider key is bundled or shared by PaperTrader. Users sharing the same key would share EODHD's account allowance, and local counters cannot coordinate across machines. For the next build, revisit a three-refresh limit and distinguish per-stock versus whole-portfolio refreshes from provider requests (one stock consumes one request). This suggestion is recorded for later, not implemented in 0.4.0.
+
+## ASX directory (0.4.1)
+
+The Stocks tab uses `GET /api/exchange-symbol-list/AU?fmt=json&delisted=0` with the profile’s Keychain key. EODHD documents exchange symbol lists as available across plans and costing one API call. The response supplies Code, Name, Type and Currency, without requesting prices. See [exchange symbols documentation](https://eodhd.com/financial-apis/exchanges-api-list-of-tickers-and-trading-hours).
+
+SQLite migration 006 caches the directory separately from financial snapshots. Requests share the price refresh reservation, UTC quota and lease; profile generation and job ID guard results after reset or overlapping windows. Failed transport/validation leaves the old cache intact and the reserved request counted. Search, type filters, pagination and adding a ticker are local. Browse-only rows show securities outside the current AUD/ticker support. No provider catalog is bundled or redistributed.
+
+Cloud validation covers response parsing, offline persistence, shared request accounting, failed update preservation and reset races. The public demo endpoint returns HTTP 403 for AU, so live ASX contents need a user key with entitlement; mock rows used in UI tests are not actual provider coverage evidence.
+
+## Daily candles and Windows
+
+Migration 007 stores nullable, exact integer micro-AUD open/high/low values beside existing closes. Missing legacy OHLC leaves candles unavailable until refresh, without inventing wicks. EODHD’s same daily history response supplies all four prices; malformed or inconsistent ranges preserve prior cached history. Candles are unadjusted, with daily session highs/lows and open/close bodies. Line-chart adjustment remains explicit.
+
+Windows uses keyring’s `windows-native` backend and Windows Credential Manager; macOS retains its `apple-native` Keychain backend. Neither stores keys in SQLite or frontend persistence. CI creates an unsigned x64 NSIS setup EXE in the PaperTrader-Windows artifact alongside the universal macOS ZIP. Installation/credential prompts on a real Windows desktop still require a local smoke test.

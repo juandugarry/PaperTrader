@@ -1,3 +1,4 @@
+import StocksDirectory from "./components/StocksDirectory";
 import MarketSettings from "./components/MarketSettings";
 import Notepad from "./components/Notepad";
 import ProfileReset from "./components/ProfileReset";
@@ -12,7 +13,7 @@ import { formatMoney, parseMoney } from "./domain/money";
 import TradingWorkspace from "./components/TradingWorkspace";
 import JournalWorkspace from "./components/JournalWorkspace";
 
-type Page = "Trade" | "Journal" | "Learn" | "Settings";
+type Page = "Trade" | "Stocks" | "Journal" | "Learn" | "Settings";
 const lessons = [
   {
     title: "How stock markets work",
@@ -81,7 +82,7 @@ export default function App() {
         <Brand />
         <section className="panel onboarding">
           <span className="eyebrow">DESKTOP APP REQUIRED</span>
-          <h1>Your portfolio stays on your Mac.</h1>
+          <h1>Your portfolio stays on your device.</h1>
           <p>
             This browser view cannot access the local SQLite database. Launch
             PaperTrader with <code>npm run desktop</code> to create your trader
@@ -118,14 +119,14 @@ export default function App() {
         <Brand />
         <div className="workspace-label">YOUR WORKSPACE</div>
         <nav aria-label="Main navigation">
-          {(["Trade", "Journal", "Learn"] as Page[]).map((tab, i) => (
+          {(["Trade", "Stocks", "Journal", "Learn"] as Page[]).map((tab, i) => (
             <button
               key={tab}
               className={page === tab ? "nav active" : "nav"}
               aria-current={page === tab ? "page" : undefined}
               onClick={() => navigate(tab)}
             >
-              <span aria-hidden="true">{["◫", "▤", "◇"][i]}</span>
+              <span aria-hidden="true">{["◫", "⌕", "▤", "◇"][i]}</span>
               {tab}
             </button>
           ))}
@@ -160,20 +161,24 @@ export default function App() {
             <h1>
               {page === "Trade"
                 ? "Your portfolio"
-                : page === "Journal"
-                  ? "Trading journal"
-                  : page === "Learn"
-                    ? "Build your trading knowledge"
-                    : "Your local workspace"}
+                : page === "Stocks"
+                  ? "Explore ASX stocks"
+                  : page === "Journal"
+                    ? "Trading journal"
+                    : page === "Learn"
+                      ? "Build your trading knowledge"
+                      : "Your local workspace"}
             </h1>
             <p>
               {page === "Trade"
                 ? "A clear view of your virtual capital."
-                : page === "Journal"
-                  ? "Good decisions start with a written plan."
-                  : page === "Learn"
-                    ? "Understand the concepts. Develop your own process."
-                    : "An independent portfolio, stored on this device."}
+                : page === "Stocks"
+                  ? "Find a company, look up its ticker, and add it to Trade."
+                  : page === "Journal"
+                    ? "Good decisions start with a written plan."
+                    : page === "Learn"
+                      ? "Understand the concepts. Develop your own process."
+                      : "An independent portfolio, stored on this device."}
             </p>
           </div>
           <span className="phase">PHASE 4</span>
@@ -202,6 +207,9 @@ export default function App() {
               Stay in notepad
             </button>
           </div>
+        )}
+        {page === "Stocks" && (
+          <StocksDirectory snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Trade" && (
           <TradingWorkspace snapshot={snapshot} onChanged={setSnapshot} />

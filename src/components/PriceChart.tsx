@@ -10,6 +10,7 @@ export default function PriceChart({
 }) {
   const [range, setRange] = useState(365),
     [adjusted, setAdjusted] = useState(false),
+    [mode, setMode] = useState<"line" | "candles">("line"),
     [date, setDate] = useState<string | null>(null);
   const all = history?.prices ?? [];
   if (!all.length)
@@ -29,12 +30,16 @@ export default function PriceChart({
     (p) => p.sessionDate >= cutoff.toISOString().slice(0, 10),
   );
   const canAdjust = prices.every((p) => p.adjustedCloseMicros !== null);
-  const useAdjusted = adjusted && canAdjust;
+  const canCandle = prices.every(
+    (p) => p.openMicros != null && p.highMicros != null && p.lowMicros != null,
+  );
+  const candles = mode === "candles" && canCandle;
+  const useAdjusted = adjusted && canAdjust && !candles;
   const values = prices.map((p) =>
     useAdjusted ? p.adjustedCloseMicros! : p.closeMicros,
   );
-  const min = Math.min(...values),
-    max = Math.max(...values),
+  const min = Math.min(...(candles ? prices.map((p) => p.lowMicros!) : values)),
+    max = Math.max(...(candles ? prices.map((p) => p.highMicros!) : values)),
     span = max - min || Math.max(max * 0.01, 1);
   const x = (i: number) =>
       40 + (prices.length === 1 ? 250 : (i / (prices.length - 1)) * 500),
@@ -69,23 +74,58 @@ export default function PriceChart({
           ))}
         </div>
       </div>
+      <div className="chart-ranges" role="group" aria-label="Chart style">
+        <button
+          type="button"
+          aria-pressed={!candles}
+          className={!candles ? "selected" : ""}
+          onClick={() => setMode("line")}
+        >
+          Line
+        </button>
+        <button
+          type="button"
+          aria-pressed={candles}
+          className={candles ? "selected" : ""}
+          disabled={!canCandle}
+          onClick={() => setMode("candles")}
+        >
+          Candlesticks
+        </button>
+      </div>
+      {!canCandle && (
+        <p className="muted">
+          Refresh this stock to load open, high and low prices for candle wicks.
+        </p>
+      )}
       <label className="adjustment">
         <input
           type="checkbox"
           checked={useAdjusted}
-          disabled={!canAdjust}
+          disabled={!canAdjust || candles}
           onChange={(e) => setAdjusted(e.target.checked)}
         />{" "}
         Adjust for splits and dividends
       </label>
       <p className="chart-reading">
-        {chosen.sessionDate} · <strong>{formatPrice(values[index])}</strong> AUD
+        {chosen.sessionDate} ·{" "}
+        {candles ? (
+          <>
+            Open {formatPrice(chosen.openMicros!)} · High{" "}
+            {formatPrice(chosen.highMicros!)} · Low{" "}
+            {formatPrice(chosen.lowMicros!)} · Close{" "}
+            <strong>{formatPrice(chosen.closeMicros)}</strong>
+          </>
+        ) : (
+          <strong>{formatPrice(values[index])}</strong>
+        )}{" "}
+        AUD
       </p>
       <svg
         className="daily-chart"
         viewBox="0 0 580 225"
         role="img"
-        aria-label={`${ticker} ${useAdjusted ? "adjusted" : "unadjusted"} daily closing prices, ${prices[0].sessionDate} to ${end.sessionDate}`}
+        aria-label={`${ticker} ${useAdjusted ? "adjusted" : "unadjusted"} ${candles ? "daily candlesticks" : "daily closing prices"}, ${prices[0].sessionDate} to ${end.sessionDate}`}
       >
         <title>{ticker} daily closing prices in AUD</title>
         <line x1="40" x2="540" y1="185" y2="185" className="chart-axis" />
@@ -98,11 +138,42 @@ export default function PriceChart({
         <text x="540" y="215" textAnchor="end">
           {end.sessionDate}
         </text>
-        <polyline
-          points={values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}
-          fill="none"
-          className="chart-line"
-        />
+        {candles ? (
+          prices.map((p, i) => {
+            const color =
+              p.closeMicros >= p.openMicros! ? "#237b59" : "#c04b49";
+            const width = Math.max(1, Math.min(10, 350 / prices.length));
+            return (
+              <g key={p.sessionDate}>
+                <title>{`${p.sessionDate}: open ${formatPrice(p.openMicros!)}, high ${formatPrice(p.highMicros!)}, low ${formatPrice(p.lowMicros!)}, close ${formatPrice(p.closeMicros)} AUD`}</title>
+                <line
+                  x1={x(i)}
+                  x2={x(i)}
+                  y1={y(p.highMicros!)}
+                  y2={y(p.lowMicros!)}
+                  stroke={color}
+                  strokeWidth="1"
+                />
+                <rect
+                  x={x(i) - width / 2}
+                  y={Math.min(y(p.openMicros!), y(p.closeMicros))}
+                  width={width}
+                  height={Math.max(
+                    1,
+                    Math.abs(y(p.openMicros!) - y(p.closeMicros)),
+                  )}
+                  fill={color}
+                />
+              </g>
+            );
+          })
+        ) : (
+          <polyline
+            points={values.map((v, i) => `${x(i)},${y(v)}`).join(" ")}
+            fill="none"
+            className="chart-line"
+          />
+        )}
         <line
           x1={x(index)}
           x2={x(index)}
@@ -130,9 +201,11 @@ export default function PriceChart({
       </label>
       <p className="muted">
         EODHD ·{" "}
-        {useAdjusted
-          ? "Adjusted for splits and dividends; history may be revised."
-          : "Unadjusted closes; splits can create jumps."}{" "}
+        {candles
+          ? "Unadjusted daily OHLC. Green: close at/above open; red: below open. Wicks show the session high and low. Splits can create jumps."
+          : useAdjusted
+            ? "Adjusted for splits and dividends; history may be revised."
+            : "Unadjusted closes; splits can create jumps."}{" "}
         Trading sessions are spaced evenly. Latest cached session{" "}
         {end.sessionDate}; not an intraday quote.
       </p>

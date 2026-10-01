@@ -13,6 +13,7 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
+  const storage = status?.storage ?? "macOS Keychain";
   useEffect(() => {
     let active = true;
     marketKeyStatus()
@@ -34,9 +35,9 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
     try {
       await saveMarketKey(key.trim());
       setKey("");
-      setStatus({ configured: true, supported: true });
+      setStatus({ configured: true, supported: true, storage });
       setMessage(
-        "API key saved in macOS Keychain. You can refresh prices from Trade.",
+        `API key saved in ${storage}. You can refresh prices from Trade.`,
       );
     } catch (e) {
       setError(String(e));
@@ -51,7 +52,7 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
     try {
       await removeMarketKey();
       setKey("");
-      setStatus({ configured: false, supported: true });
+      setStatus({ configured: false, supported: true, storage });
       setMessage(
         "API key removed. Previously cached prices remain on this device.",
       );
@@ -90,16 +91,16 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
       </p>
       {status && !status.supported ? (
         <p className="notice">
-          Saved API keys currently require the macOS app.
+          Saved API keys require the macOS or Windows app.
         </p>
       ) : (
         <>
           <p className="key-status">
             {status
               ? status.configured
-                ? "API key saved · macOS Keychain"
+                ? `API key saved · ${storage}`
                 : "No API key saved"
-              : "Checking Keychain…"}
+              : "Checking secure key storage…"}
           </p>
           <form onSubmit={save}>
             <fieldset disabled={busy || !status?.supported}>
@@ -143,8 +144,8 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
         </>
       )}
       <p className="muted">
-        The key is stored in macOS Keychain, never in your portfolio database.
-        Reset removes it along with your profile. Closing prices are reference
+        The key is stored in {storage}, never in your portfolio database. Reset
+        removes it along with your profile. Closing prices are reference
         valuations; refresh never changes your recorded fills.
       </p>
       {error && (

@@ -31,3 +31,26 @@ jobs:
           name: PaperTrader-macOS
           path: PaperTrader-macOS.zip
           if-no-files-found: error
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --no-default-features -- -D warnings
+      - name: Build Windows application and installer (unsigned)
+        run: npm run tauri -- build --bundles nsis
+      - name: Upload downloadable Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperTrader-Windows
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
