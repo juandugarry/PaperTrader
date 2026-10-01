@@ -1,6 +1,6 @@
 [package]
 name = "papertrader"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.98.1"
 
@@ -18,9 +18,15 @@ tauri-build = { version = "2", optional = true, features = [] }
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 tauri = { version = "2", optional = true, features = [] }
 
 [[bin]]
 name = "papertrader"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }

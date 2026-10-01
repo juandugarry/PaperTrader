@@ -65,7 +65,7 @@ Each reviewed fill has a request ID. Retrying an identical request returns the e
 
 The database-level BEN acceptance test creates a disposable $1,000 portfolio, buys 24 BEN at $10.115 with $3 brokerage, and checks exactly $754.24 cash. It then marks, partially sells and closes the position, checking cash/P&L reconciliation. Other tests cover multiple buys, cost-allocation remainder, overselling, insufficient cash, invalid/overflow input, rollback, duplicate retries, immutable fills, migration, prices and restart persistence. Test data is not installed into the application.
 
-Phase 4 will investigate licensed ASX data retrieval before selecting a provider. Pending orders, charts, analytics, AI, backup/import and signed distribution remain deferred. Brokerage is adjustable on each fill.
+Phase 4 uses the agreed EODHD free end-of-day option for private reference prices and charts. Pending orders, analytics, AI, backup/import and signed distribution remain deferred. Brokerage is adjustable on each fill.
 
 ## Schema version 3 and journal behaviour
 
@@ -98,3 +98,11 @@ All desktop profile mutations include the generation identifier and check it ins
 Reset requires the exact confirmation `RESET` and the current generation. It atomically drops and recreates the simulation tables using the released migrations, then returns to onboarding. This explicit whole-profile operation is the only exception to immutable financial and journal records; individual fills and revisions remain immutable. Notes are also deleted. A new profile receives a different generation identifier. Cancellation or an invalid confirmation preserves all data. Reset offers no undo or backup.
 
 The notepad uses explicit saves and guards unsaved drafts when navigating within the app. Drafts are not persisted until saved; users should save before closing the native window. Tests cover note persistence/conflicts, complete reset, restart, stale-window rejection and restored immutability triggers.
+
+## Schema version 5: optional EODHD reference prices
+
+`securities` adds source, provider session date, reference-price version, last successful retrieval time and last error. `daily_prices` stores one raw close and optional adjusted close per security/session. `market_usage` stores anonymous UTC-day reservation counts; it survives reset to preserve the daily allowance. Profile settings hold the active refresh identifier and start time, never the API key.
+
+`market.rs` validates exact JSON prices/dates and retrieves bounded EODHD daily history through verified HTTPS. `market_service.rs` orchestrates blocking network/Keychain work; Tauri commands run it on a worker. Network activity releases the database mutex. `credentials.rs` uses macOS Keychain; secure key persistence on other desktop platforms is not implemented. Manual prices remain available there.
+
+Refresh reservations use an IMMEDIATE transaction. Completion guards profile generation, job ID and reference-price versions, then applies each symbol under a savepoint with existing accounting limits. Per-symbol failure preserves its prior history/price; successful symbols commit. Manual price writes increment their version and switch provenance to manual without deleting historical charts. Retrieval never changes ledger/fills or journals. See [market-data design and terms](market-data.md).

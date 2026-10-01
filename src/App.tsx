@@ -1,3 +1,4 @@
+import MarketSettings from "./components/MarketSettings";
 import Notepad from "./components/Notepad";
 import ProfileReset from "./components/ProfileReset";
 import { useEffect, useState, type FormEvent } from "react";
@@ -87,7 +88,7 @@ export default function App() {
             profile.
           </p>
           <p className="muted">
-            Phase 3 · No cloud account · Fictional money only
+            Phase 4 · No cloud account · Fictional money only
           </p>
         </section>
       </div>
@@ -175,7 +176,7 @@ export default function App() {
                     : "An independent portfolio, stored on this device."}
             </p>
           </div>
-          <span className="phase">PHASE 3</span>
+          <span className="phase">PHASE 4</span>
         </div>
         {pendingNavigation && (
           <div className="unsaved-confirm">
@@ -294,6 +295,7 @@ export default function App() {
               Profile settings are read-only. Brokerage can be overridden on
               each fill. Backup and restore will be added later.
             </p>
+            <MarketSettings market={snapshot.market} />
             <ProfileReset
               onReset={() => {
                 setSnapshot(null);

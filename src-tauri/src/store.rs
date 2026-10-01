@@ -1,5 +1,6 @@
 use crate::domain::validate_setup;
 use crate::journal::{self, JournalTrade, SaveJournal};
+use crate::market::{self, DailyPrice, History, MarketSnapshot, RefreshJob, RefreshSecurity};
 use crate::notes::{self, DeleteNote, Note, SaveNote};
 use crate::trading::{self, CreateSecurity, ExecuteTrade, SetPrice, TradingSnapshot};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -19,6 +20,7 @@ pub struct Snapshot {
     pub display_name: String,
     pub profile_id: String,
     pub notes: Vec<Note>,
+    pub market: MarketSnapshot,
     pub default_brokerage_micros: i64,
     pub currency: String,
     pub primary_market: String,
@@ -53,7 +55,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 4 {
+        if version > 5 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -88,6 +90,14 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
+        if version < 5 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/005_market_data.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 5)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
         Ok(Self { connection })
     }
     pub fn snapshot(&self) -> Result<Option<Snapshot>, String> {
@@ -119,10 +129,12 @@ impl Store {
         let trading = trading::read(&tx, cash_micros, starting_capital_micros)?;
         let journal = journal::read(&tx)?;
         let notes = notes::read(&tx)?;
+        let market = Self::read_market(&tx)?;
         Ok(Some(Snapshot {
             display_name,
             profile_id,
             notes,
+            market,
             default_brokerage_micros,
             currency,
             primary_market,
@@ -181,7 +193,7 @@ impl Store {
         self.mutate(|c| journal::save(c, input))
     }
 
-    fn check_profile(c: &Connection, expected: &str) -> Result<(), String> {
+    pub(crate) fn check_profile(c: &Connection, expected: &str) -> Result<(), String> {
         let actual = c
             .query_row("SELECT profile_id FROM settings WHERE id=1", [], |r| {
                 r.get::<_, String>(0)
@@ -219,7 +231,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Self::check_profile(&tx, profile_id)?;
         // Explicit whole-profile reset only. Ordinary fill and journal edits retain their immutability triggers.
-        tx.execute_batch("DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
+        tx.execute_batch("DROP TABLE daily_prices; DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
         tx.execute_batch(include_str!("../migrations/001_foundation.sql"))
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
@@ -228,11 +240,193 @@ impl Store {
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/004_notes_and_reset.sql"))
             .map_err(|e| e.to_string())?;
-        tx.pragma_update(None, "user_version", 4)
+        tx.execute_batch(include_str!("../migrations/005_market_data.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.pragma_update(None, "user_version", 5)
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
+    fn read_market(c: &Connection) -> Result<MarketSnapshot, String> {
+        let requests_today = c
+            .query_row(
+                "SELECT COALESCE((SELECT requests FROM market_usage WHERE utc_day=date('now')),0)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let refreshing = c.query_row("SELECT market_refresh_id IS NOT NULL AND market_refresh_started > unixepoch()-600 FROM settings WHERE id=1", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let mut histories = Vec::new();
+        let mut query = c.prepare("SELECT id,market_fetched_at FROM securities WHERE market_fetched_at IS NOT NULL ORDER BY ticker").map_err(|e|e.to_string())?;
+        let securities = query
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for security in securities {
+            let (security_id, fetched_at) = security.map_err(|e| e.to_string())?;
+            let mut q = c.prepare("SELECT session_date,close_micros,adjusted_close_micros FROM daily_prices WHERE security_id=?1 ORDER BY session_date").map_err(|e|e.to_string())?;
+            let prices = q
+                .query_map([security_id], |r| {
+                    Ok(DailyPrice {
+                        session_date: r.get(0)?,
+                        close_micros: r.get(1)?,
+                        adjusted_close_micros: r.get(2)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            histories.push(History {
+                security_id,
+                fetched_at,
+                prices,
+            });
+        }
+        Ok(MarketSnapshot {
+            requests_today,
+            daily_limit: market::DAILY_LIMIT,
+            refreshing,
+            histories,
+        })
+    }
+    pub fn verify_profile(&self, profile_id: &str) -> Result<(), String> {
+        Self::check_profile(&self.connection, profile_id)
+    }
+    pub fn begin_refresh(&mut self, profile_id: &str, ids: Vec<i64>) -> Result<RefreshJob, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let (active, started): (Option<String>, Option<i64>) = tx
+            .query_row(
+                "SELECT market_refresh_id,market_refresh_started FROM settings WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp();
+        if active.is_some() && started.is_some_and(|t| now - t < 600) {
+            return Err("A price refresh is already running. Wait for it to finish.".into());
+        }
+        if started.is_some_and(|t| now - t < 60) {
+            return Err(
+                "Wait one minute between price refreshes to protect your allowance.".into(),
+            );
+        }
+        let mut unique = ids;
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.is_empty() || unique.len() > 20 {
+            return Err("Choose between 1 and 20 securities to refresh.".into());
+        }
+        let used: i64 = tx
+            .query_row(
+                "SELECT COALESCE((SELECT requests FROM market_usage WHERE utc_day=date('now')),0)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if used + unique.len() as i64 > market::DAILY_LIMIT {
+            return Err(format!("Only {} local requests remain today. Refresh fewer securities or wait until tomorrow (UTC).",market::DAILY_LIMIT-used));
+        }
+        let mut securities = Vec::new();
+        for id in unique {
+            let security = tx
+                .query_row(
+                    "SELECT ticker,price_version FROM securities WHERE id=?1",
+                    [id],
+                    |r| {
+                        Ok(RefreshSecurity {
+                            id,
+                            ticker: r.get(0)?,
+                            price_version: r.get(1)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or("Security not found.")?;
+            securities.push(security);
+        }
+        let id: String = tx
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO market_usage(utc_day,requests) VALUES(date('now'),?1) ON CONFLICT(utc_day) DO UPDATE SET requests=requests+excluded.requests",[securities.len() as i64]).map_err(|e|e.to_string())?;
+        tx.execute(
+            "DELETE FROM market_usage WHERE utc_day<date('now','-7 days')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE settings SET market_refresh_id=?1,market_refresh_started=?2 WHERE id=1",
+            params![id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(RefreshJob {
+            profile_id: profile_id.into(),
+            id,
+            securities,
+        })
+    }
+    pub fn finish_refresh(
+        &mut self,
+        job: RefreshJob,
+        results: Vec<Result<Vec<DailyPrice>, String>>,
+    ) -> Result<Snapshot, String> {
+        if results.len() != job.securities.len() {
+            return Err("Incomplete price refresh.".into());
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, &job.profile_id)?;
+        let active: Option<String> = tx
+            .query_row(
+                "SELECT market_refresh_id FROM settings WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active.as_deref() != Some(&job.id) {
+            return Err("This refresh was replaced. Reload your portfolio.".into());
+        }
+        for (security, result) in job.securities.iter().zip(results) {
+            tx.execute_batch("SAVEPOINT market_symbol")
+                .map_err(|e| e.to_string())?;
+            let saved = result.and_then(|prices| {
+                let latest=prices.last().ok_or("No daily history was returned.")?;
+                let (version,old_date):(i64,Option<String>)=tx.query_row("SELECT price_version,price_as_of FROM securities WHERE id=?1",[security.id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+                if version!=security.price_version { return Err("Reference price changed during refresh. Cached prices kept; refresh again later.".into()); }
+                if old_date.is_some_and(|date| date>latest.session_date) { return Err("EODHD returned an older session than the cached price. Cached prices kept.".into()); }
+                tx.execute("DELETE FROM daily_prices WHERE security_id=?1",[security.id]).map_err(|e|e.to_string())?;
+                for p in &prices {
+                    tx.execute("INSERT INTO daily_prices(security_id,session_date,close_micros,adjusted_close_micros) VALUES(?1,?2,?3,?4)",params![security.id,p.session_date,p.close_micros,p.adjusted_close_micros]).map_err(|e|e.to_string())?;
+                }
+                tx.execute("UPDATE securities SET current_price_micros=?1,price_as_of=?2,price_source='eodhd',price_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_fetched_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_error=NULL,price_version=price_version+1 WHERE id=?3",params![latest.close_micros,latest.session_date,security.id]).map_err(|e|e.to_string())?;
+                let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+                trading::read(&tx,cash,starting)?;
+                Ok(())
+            });
+            if let Err(error) = saved {
+                tx.execute_batch("ROLLBACK TO market_symbol")
+                    .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "UPDATE securities SET market_error=?1 WHERE id=?2",
+                    params![error, security.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute_batch("RELEASE market_symbol")
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute("UPDATE settings SET market_refresh_id=NULL WHERE id=1", [])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.snapshot()?.ok_or("Portfolio unavailable.".into())
+    }
+
     pub fn create_profile(&mut self, input: CreateProfile) -> Result<Snapshot, String> {
         validate_setup(
             &input.display_name,
@@ -339,7 +533,7 @@ mod tests {
     #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 5).unwrap();
+        c.pragma_update(None, "user_version", 6).unwrap();
         assert!(Store::from_connection(c).is_err());
     }
     fn prepared() -> Store {
@@ -1095,5 +1289,218 @@ mod tests {
             assert!(s.notes.is_empty());
         }
         std::fs::remove_file(path).unwrap();
+    }
+    fn daily(date: &str, close: i64) -> Vec<DailyPrice> {
+        vec![DailyPrice {
+            session_date: date.into(),
+            close_micros: close,
+            adjusted_close_micros: Some(close - 1000),
+        }]
+    }
+    fn allow_next_refresh(db: &Store) {
+        db.connection
+            .execute(
+                "UPDATE settings SET market_refresh_started=unixepoch()-61",
+                [],
+            )
+            .unwrap();
+    }
+    #[test]
+    fn market_refresh_preserves_fills_cash_journal_and_tracks_session_and_source() {
+        let mut db = prepared();
+        let id = profile(&db);
+        db.execute_trade(fill(1, crate::engine::Side::BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        let before = db.snapshot().unwrap().unwrap();
+        let job = db.begin_refresh(&id, vec![1, 1]).unwrap();
+        assert_eq!(job.securities.len(), 1);
+        assert!(db.snapshot().unwrap().unwrap().market.refreshing);
+        assert!(db.begin_refresh(&id, vec![1]).is_err());
+        let s = db
+            .finish_refresh(job, vec![Ok(daily("2026-09-30", 10_600_000))])
+            .unwrap();
+        assert_eq!(s.cash_micros, before.cash_micros);
+        assert_eq!(s.trading.executions[0].price_micros, 10_115_000);
+        assert_eq!(
+            s.journal[0].fills[0].revisions.len(),
+            before.journal[0].fills[0].revisions.len()
+        );
+        assert_eq!(s.trading.unrealised_pnl_micros, Some(8_640_000));
+        assert_eq!(s.trading.securities[0].price_source, "eodhd");
+        assert_eq!(
+            s.trading.securities[0].price_as_of.as_deref(),
+            Some("2026-09-30")
+        );
+        assert_eq!(s.market.requests_today, 1);
+        assert!(!s.market.refreshing);
+        assert_eq!(s.market.histories[0].prices[0].close_micros, 10_600_000);
+        assert!(db.begin_refresh(&id, vec![1]).is_err());
+    }
+    #[test]
+    fn failed_and_older_quotes_preserve_cache_and_partial_batch_succeeds() {
+        let mut db = prepared();
+        let id = profile(&db);
+        let j = db.begin_refresh(&id, vec![1]).unwrap();
+        db.finish_refresh(j, vec![Ok(daily("2026-09-30", 10_600_000))])
+            .unwrap();
+        allow_next_refresh(&db);
+        db.create_security(CreateSecurity {
+            ticker: "BHP".into(),
+            name: "BHP".into(),
+        })
+        .unwrap();
+        let j = db.begin_refresh(&id, vec![1, 2]).unwrap();
+        let s = db
+            .finish_refresh(
+                j,
+                vec![
+                    Err("Offline. Cached prices kept.".into()),
+                    Ok(daily("2026-09-30", 40_000_000)),
+                ],
+            )
+            .unwrap();
+        let ben = s.trading.securities.iter().find(|s| s.id == 1).unwrap();
+        assert_eq!(ben.current_price_micros, Some(10_600_000));
+        assert!(ben.market_error.is_some());
+        assert_eq!(s.market.histories.len(), 2);
+        allow_next_refresh(&db);
+        let j = db.begin_refresh(&id, vec![1]).unwrap();
+        let s = db
+            .finish_refresh(j, vec![Ok(daily("2026-09-29", 11_000_000))])
+            .unwrap();
+        assert!(s
+            .trading
+            .securities
+            .iter()
+            .find(|s| s.id == 1)
+            .unwrap()
+            .market_error
+            .as_ref()
+            .unwrap()
+            .contains("older"));
+    }
+    #[test]
+    fn market_limits_survive_reset_and_invalid_requests_cost_nothing() {
+        let mut db = prepared();
+        let id = profile(&db);
+        assert!(db.begin_refresh(&id, vec![]).is_err());
+        assert!(db.begin_refresh(&id, vec![99]).is_err());
+        assert!(db.begin_refresh("stale", vec![1]).is_err());
+        assert_eq!(db.snapshot().unwrap().unwrap().market.requests_today, 0);
+        db.connection
+            .execute("INSERT INTO market_usage VALUES(date('now'),19)", [])
+            .unwrap();
+        let j = db.begin_refresh(&id, vec![1]).unwrap();
+        db.finish_refresh(j, vec![Err("Rate limited".into())])
+            .unwrap();
+        allow_next_refresh(&db);
+        assert!(db.begin_refresh(&id, vec![1]).is_err());
+        db.reset_profile(&id, "RESET").unwrap();
+        let s = db.create_profile(input()).unwrap();
+        assert_eq!(s.market.requests_today, 20);
+        assert!(s.market.histories.is_empty());
+        db.connection
+            .execute("UPDATE market_usage SET utc_day=date('now','-1 day')", [])
+            .unwrap();
+        assert_eq!(db.snapshot().unwrap().unwrap().market.requests_today, 0);
+    }
+    #[test]
+    fn reset_and_manual_price_changes_reject_inflight_market_writes() {
+        let mut db = prepared();
+        let id = profile(&db);
+        let j = db.begin_refresh(&id, vec![1]).unwrap();
+        db.set_price(SetPrice {
+            security_id: 1,
+            price_micros: 12_000_000,
+        })
+        .unwrap();
+        let s = db
+            .finish_refresh(j, vec![Ok(daily("2026-09-30", 10_600_000))])
+            .unwrap();
+        assert_eq!(
+            s.trading.securities[0].current_price_micros,
+            Some(12_000_000)
+        );
+        assert_eq!(s.trading.securities[0].price_source, "manual");
+        assert!(s.market.histories.is_empty());
+        allow_next_refresh(&db);
+        let j = db.begin_refresh(&id, vec![1]).unwrap();
+        db.reset_profile(&id, "RESET").unwrap();
+        db.create_profile(input()).unwrap();
+        db.create_security(CreateSecurity {
+            ticker: "BEN".into(),
+            name: "Bank".into(),
+        })
+        .unwrap();
+        assert!(db
+            .finish_refresh(j, vec![Ok(daily("2026-09-30", 10_600_000))])
+            .is_err());
+        assert!(db.snapshot().unwrap().unwrap().market.histories.is_empty());
+    }
+    #[test]
+    fn market_history_persists_and_bad_valuation_rolls_back_only_that_symbol() {
+        let path = database_path("market");
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            db.create_security(CreateSecurity {
+                ticker: "BEN".into(),
+                name: "Bank".into(),
+            })
+            .unwrap();
+            db.execute_trade(fill(1, crate::engine::Side::BUY, 24, 10_115_000, 3_000_000))
+                .unwrap();
+            let id = profile(&db);
+            let j = db.begin_refresh(&id, vec![1]).unwrap();
+            db.finish_refresh(j, vec![Ok(daily("2026-09-30", 10_600_000))])
+                .unwrap();
+            allow_next_refresh(&db);
+            let j = db.begin_refresh(&id, vec![1]).unwrap();
+            let s = db
+                .finish_refresh(j, vec![Ok(daily("2026-10-01", crate::domain::MAX_MONEY))])
+                .unwrap();
+            assert_eq!(
+                s.trading.securities[0].current_price_micros,
+                Some(10_600_000)
+            );
+            assert_eq!(s.market.histories[0].prices[0].session_date, "2026-09-30");
+            assert!(s.trading.securities[0].market_error.is_some());
+        }
+        let db = Store::open(&path).unwrap();
+        let s = db.snapshot().unwrap().unwrap();
+        assert_eq!(s.market.histories[0].prices[0].close_micros, 10_600_000);
+        assert_eq!(s.market.requests_today, 2);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn v4_migration_preserves_manual_prices_and_does_not_seed_history() {
+        let c = Connection::open_in_memory().unwrap();
+        for sql in [
+            include_str!("../migrations/001_foundation.sql"),
+            include_str!("../migrations/002_manual_trading.sql"),
+            include_str!("../migrations/003_trading_journal.sql"),
+            include_str!("../migrations/004_notes_and_reset.sql"),
+        ] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 4).unwrap();
+        c.execute("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market,profile_id) VALUES(1,'Trader',0,'AUD','ASX',lower(hex(randomblob(16))))",[]).unwrap();
+        c.execute(
+            "INSERT INTO portfolios(id,name) VALUES(1,'Paper portfolio')",
+            [],
+        )
+        .unwrap();
+        c.execute("INSERT INTO cash_ledger(portfolio_id,kind,amount_micros,description) VALUES(1,'opening_capital',1000000000,'Capital')",[]).unwrap();
+        c.execute("INSERT INTO securities(ticker,name,current_price_micros,price_updated_at) VALUES('BEN','Bank',10115000,'2026-09-30T00:00:00Z')",[]).unwrap();
+        let db = Store::from_connection(c).unwrap();
+        let s = db.snapshot().unwrap().unwrap();
+        assert_eq!(
+            s.trading.securities[0].current_price_micros,
+            Some(10_115_000)
+        );
+        assert_eq!(s.trading.securities[0].price_source, "manual");
+        assert!(s.market.histories.is_empty());
+        assert_eq!(s.market.requests_today, 0);
     }
 }

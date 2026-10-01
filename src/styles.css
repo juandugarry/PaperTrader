@@ -1199,3 +1199,106 @@ select:focus-visible {
   font-size: 11px;
   margin-right: 10px;
 }
+.market-settings {
+  border-top: 1px solid #dce6e3;
+  margin-top: 28px;
+  padding-top: 24px;
+}
+.market-settings p {
+  line-height: 1.7;
+}
+.market-settings a {
+  color: #17796e;
+  text-decoration: underline;
+}
+.market-settings form {
+  max-width: 560px;
+}
+.market-settings input {
+  width: 100%;
+}
+.market-prices {
+  padding-bottom: 22px;
+  border-bottom: 1px solid #dce6e3;
+  margin-bottom: 24px;
+}
+.market-prices h4,
+.price-chart h4 {
+  margin: 0;
+}
+.reference-price {
+  font-size: 25px;
+  font-weight: 600;
+  margin: 10px 0;
+}
+.price-chart {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #dce6e3;
+}
+.chart-ranges {
+  display: flex;
+  gap: 3px;
+}
+.chart-ranges button {
+  background: transparent;
+  color: #617777;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+.chart-ranges button.selected {
+  background: #e7f3ef;
+  color: #17796e;
+}
+.adjustment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.adjustment input {
+  width: auto;
+}
+.chart-reading {
+  font-size: 13px;
+}
+.daily-chart {
+  width: 100%;
+  display: block;
+  overflow: visible;
+}
+.daily-chart text {
+  font-size: 11px;
+  fill: #607774;
+}
+.chart-axis {
+  stroke: #d9e5e2;
+}
+.chart-line {
+  stroke: #17796e;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.chart-crosshair {
+  stroke: #9bbab3;
+  stroke-dasharray: 3 4;
+}
+.chart-point {
+  fill: #17796e;
+}
+.price-chart input[type="range"] {
+  padding: 0;
+  accent-color: #17796e;
+}
+.key-status {
+  color: #17796e;
+  font-weight: 600;
+}
+@media (max-width: 950px) {
+  .price-chart .section-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}

@@ -3,6 +3,7 @@ export interface Snapshot {
   displayName: string;
   profileId: string;
   notes: Note[];
+  market: MarketSnapshot;
   defaultBrokerageMicros: number;
   currency: string;
   primaryMarket: string;
@@ -20,6 +21,11 @@ export interface CreateProfile {
 export const desktopAvailable = isTauri();
 let currentProfileId: string | null = null;
 function remember<T extends Snapshot | null>(snapshot: T): T {
+  if (currentProfileId && snapshot && snapshot.profileId !== currentProfileId) {
+    throw new Error(
+      "The profile was reset or changed. Reopen the app before continuing.",
+    );
+  }
   currentProfileId = snapshot?.profileId ?? null;
   return snapshot;
 }
@@ -43,6 +49,10 @@ export interface Security {
   name: string;
   currentPriceMicros: number | null;
   priceUpdatedAt: string | null;
+  priceSource: "manual" | "eodhd";
+  priceAsOf: string | null;
+  marketFetchedAt: string | null;
+  marketError: string | null;
 }
 export interface Position {
   securityId: number;
@@ -171,3 +181,42 @@ export async function resetProfile(confirmation: string): Promise<void> {
   });
   currentProfileId = null;
 }
+
+export interface DailyPrice {
+  sessionDate: string;
+  closeMicros: number;
+  adjustedCloseMicros: number | null;
+}
+export interface PriceHistory {
+  securityId: number;
+  fetchedAt: string;
+  prices: DailyPrice[];
+}
+export interface MarketSnapshot {
+  requestsToday: number;
+  dailyLimit: number;
+  refreshing: boolean;
+  histories: PriceHistory[];
+}
+export interface MarketKeyStatus {
+  configured: boolean;
+  supported: boolean;
+}
+function activeProfile(): string {
+  if (!currentProfileId)
+    throw new Error("Reopen your local profile before continuing.");
+  return currentProfileId;
+}
+export const marketKeyStatus = () =>
+  invoke<MarketKeyStatus>("market_key_status", { profileId: activeProfile() });
+export const saveMarketKey = (key: string) =>
+  invoke<void>("save_market_key", { profileId: activeProfile(), key });
+export const removeMarketKey = () =>
+  invoke<void>("remove_market_key", { profileId: activeProfile() });
+export const refreshMarketPrices = (securityIds: number[]) =>
+  invoke<Snapshot>("refresh_market_prices", {
+    profileId: activeProfile(),
+    securityIds,
+  }).then(remember);
+
+export const openMarketSignup = () => invoke<void>("open_market_signup");

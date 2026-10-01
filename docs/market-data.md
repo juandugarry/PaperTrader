@@ -1,6 +1,6 @@
 # Phase 4 market-data research
 
-Automatic ASX quote refresh and historical charts are not integrated yet. The project brief requires discussing licensing, cost and trade-offs before choosing a provider.
+The user agreed to free EODHD end-of-day data after reviewing licensing, cost and trade-offs. Release 0.4.0 integrates explicit refresh and daily charts.
 
 ## Verified official documentation (1 October 2026)
 
@@ -33,8 +33,20 @@ Historical API documentation distinguishes raw OHLC from adjusted close. Use una
 - [Twelve Data pricing](https://twelvedata.com/pricing)
 - [Marketstack pricing](https://marketstack.com/product)
 
-## Next step
+## Implemented behaviour (0.4.0)
 
-Await agreement to use free EODHD end-of-day data versus investigating paid delayed pricing. Then implement Rust retrieval, secure local key handling, timestamped cached reference prices, explicit refresh, rate-limit/error handling and historical charts. Do not put keys in chat, logs or the repository. No provider client or credential requirement has been configured yet.
+Rust requests `https://eodhd.com/api/eod/TICKER.AU` with a daily, ascending range covering the last 365 days. The user's API key is stored through macOS Keychain, scoped to the profile generation. IPC reports key presence only; it never returns the stored key. Saving a key does not verify entitlement or spend a request. The first explicit refresh validates actual access through the provider response. Signup opens the fixed official registration URL in the Mac's browser.
 
-Release 0.3.1 already delivers profile reset and local notepad. This research update does not change application behaviour.
+No scheduled polling occurs. Each batch reserves one slot per unique selected security before networking, subject to a 20-slot local UTC-day cap and one-minute cooldown. Reservations survive early aborts, failed responses, restarts and profile reset. This conservative counter cannot account for requests made in other apps. A batch has at most 20 securities; concurrent batches are rejected, with a ten-minute recovery lease after a crash. Network timeouts are bounded to 20 seconds per attempted symbol. Authentication, rate-limit and network/service failures stop further requests in that batch; per-symbol entitlement or ticker failures allow the remaining symbols to continue.
+
+Network work runs outside the database mutex. Completion checks profile generation, refresh identifier and each reference-price version. Reset or a concurrent manual-price change prevents stale provider writes. Per-symbol savepoints preserve existing price/history on errors or excessive derived valuations; successful stocks still commit. A response older than the cached provider session is rejected. Keys, request URLs and raw provider error bodies are never returned or logged. HTTPS uses the operating system's trusted certificates, with verification enabled and redirects disabled.
+
+Prices are parsed from JSON decimals directly into integer micro-AUD, rounding extra precision half up. Malformed, duplicate, empty, oversized, future or out-of-range history is rejected. The latest unadjusted close updates valuation; chart adjustment is optional and explicitly labelled. Full cached history is replaced on successful refresh, so adjusted historical revisions are not patched onto stale data. Provider prices never alter executions or commentary. Cached values show their session date and retrieval time and do not claim to be current intraday prices.
+
+Migration 005 preserves existing profiles and manual reference prices. Reset removes prices, charts and the profile's Keychain credential; only anonymous UTC-day request counts remain to protect the allowance. Removing a key alone retains cached prices.
+
+## Validation limits
+
+Cloud tests cover exact parsing, malformed responses, partial failures, valuation rollback, quota/cooldown/concurrency, v4 migration, restart persistence, reset during refresh and concurrent manual-price changes. Frontend tests mock IPC for key setup/removal, refresh outcomes, cached charts, allowance and adjusted-series interaction. A real HTTPS smoke using EODHD's documented public AAPL demo returned 251 daily rows; it verifies provider transport and parsing, not ASX entitlement. That optional network test is ignored in the normal offline test suite and was run explicitly.
+
+No user's key is configured in this cloud environment. A private ASX request, macOS Keychain prompts and native desktop IPC still require validation on the user's Mac. The universal macOS build runs in GitHub Actions; its result cannot be queried here because GitHub API access remains forbidden. No paid subscription or provider dataset is bundled.

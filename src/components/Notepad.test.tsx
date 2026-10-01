@@ -15,6 +15,12 @@ function fixture(): Snapshot {
     displayName: "Alex",
     profileId: "test-profile",
     notes: [],
+    market: {
+      requestsToday: 0,
+      dailyLimit: 20,
+      refreshing: false,
+      histories: [],
+    },
     currency: "AUD",
     primaryMarket: "ASX",
     defaultBrokerageMicros: 3_000_000,

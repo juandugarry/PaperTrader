@@ -3,9 +3,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
-import { createProfile, getSnapshot, resetProfile, type Snapshot } from "./api";
+import {
+  createProfile,
+  getSnapshot,
+  resetProfile,
+  marketKeyStatus,
+  type Snapshot,
+} from "./api";
 vi.mock("./api", () => ({
   desktopAvailable: true,
+  openMarketSignup: vi.fn(),
+  marketKeyStatus: vi
+    .fn()
+    .mockResolvedValue({ configured: false, supported: true }),
+  saveMarketKey: vi.fn(),
+  removeMarketKey: vi.fn(),
+  refreshMarketPrices: vi.fn(),
   getSnapshot: vi.fn(),
   createProfile: vi.fn(),
   resetProfile: vi.fn(),
@@ -20,6 +33,12 @@ const portfolio: Snapshot = {
   displayName: "Alex",
   profileId: "test-profile",
   notes: [],
+  market: {
+    requestsToday: 0,
+    dailyLimit: 20,
+    refreshing: false,
+    histories: [],
+  },
   defaultBrokerageMicros: 3_000_000,
   currency: "AUD",
   primaryMarket: "ASX",
@@ -41,6 +60,10 @@ const portfolio: Snapshot = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(marketKeyStatus).mockResolvedValue({
+    configured: false,
+    supported: true,
+  });
   vi.mocked(getSnapshot).mockResolvedValue(null);
 });
 afterEach(cleanup);
@@ -149,9 +172,7 @@ describe("Profile and navigation through the IPC boundary", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Your portfolio" });
     await user.click(screen.getByRole("button", { name: /Journal/ }));
-    await user.click(
-      screen.getByRole("button", { name: "Notepad" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Notepad" }));
     await user.click(screen.getByRole("button", { name: "New note" }));
     await user.type(screen.getByLabelText("Note title"), "Unsaved question");
     await user.click(screen.getByRole("button", { name: /Settings/ }));

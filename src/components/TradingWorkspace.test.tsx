@@ -4,8 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TradingWorkspace from "./TradingWorkspace";
-import { createSecurity, setPrice, executeTrade, type Snapshot } from "../api";
+import {
+  createSecurity,
+  setPrice,
+  executeTrade,
+  marketKeyStatus,
+  type Snapshot,
+} from "../api";
 vi.mock("../api", () => ({
+  marketKeyStatus: vi
+    .fn()
+    .mockResolvedValue({ configured: false, supported: true }),
+  refreshMarketPrices: vi.fn(),
   createSecurity: vi.fn(),
   setPrice: vi.fn(),
   executeTrade: vi.fn(),
@@ -16,12 +26,22 @@ const security = {
   name: "Bendigo and Adelaide Bank",
   currentPriceMicros: null,
   priceUpdatedAt: null,
+  priceSource: "manual" as const,
+  priceAsOf: null,
+  marketFetchedAt: null,
+  marketError: null,
 };
 function fresh(): Snapshot {
   return {
     displayName: "Alex",
     profileId: "test-profile",
     notes: [],
+    market: {
+      requestsToday: 0,
+      dailyLimit: 20,
+      refreshing: false,
+      histories: [],
+    },
     currency: "AUD",
     primaryMarket: "ASX",
     defaultBrokerageMicros: 3_000_000,
@@ -65,6 +85,7 @@ function bought() {
       costBasisMicros: 245_760_000,
       currentPriceMicros: null,
       priceUpdatedAt: null,
+
       valueMicros: null,
       unrealisedPnlMicros: null,
     },
@@ -90,7 +111,13 @@ function Harness({ initial }: { initial: Snapshot }) {
   const [snapshot, setSnapshot] = useState(initial);
   return <TradingWorkspace snapshot={snapshot} onChanged={setSnapshot} />;
 }
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(marketKeyStatus).mockResolvedValue({
+    configured: false,
+    supported: true,
+  });
+});
 afterEach(cleanup);
 async function prepareBuy(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText("Quantity (whole shares)"), "24");

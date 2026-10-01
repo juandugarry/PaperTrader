@@ -1,14 +1,26 @@
 # PaperTrader
 
-A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, cloud account, market-data provider, AI integration or real brokerage connection.
+A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
 
-## Current release · 0.3.1
+## Phase 4 · 0.4.0 · ASX end-of-day prices
+
+- **Settings → ASX end-of-day prices:** create a free EODHD account and save its API key in macOS Keychain. No key is stored in SQLite, localStorage or the repository.
+- **Trade → select a stock → Refresh price:** fetch its latest published closing price and up to one year of daily history. Refresh all updates your local security list when enough allowance remains.
+- Reference prices show their source, session date and retrieval time. Daily charts offer one-month, three-month and one-year views, date exploration, and explicit split/dividend adjustment.
+- Closing-price refresh changes reference valuations only. Your immutable simulated fills, cash ledger and commentary stay intact. Manual reference prices remain available.
+- Cached charts/prices work offline. Per-stock errors retain previous data. A local 20-request cap resets at UTC midnight, with a one-minute cooldown between refresh batches; opening the app makes no market-data request.
+
+One stock-history request uses one allowance slot. Reserved slots remain counted if a batch stops early, and the quota counter survives profile reset. EODHD may count usage from other applications too. End-of-day data usually publishes 2–3 hours after market close; it is not an intraday quote. This integration is for private personal use, without shared keys or redistribution of provider data. See [provider terms and implementation](docs/market-data.md).
+
+**First use on your Mac:** download the latest successful Actions artifact, open Settings, create the free provider account, paste your key and allow macOS Keychain access when prompted. Add an ASX ticker such as your chosen stock’s local code (no `.AU` suffix), select it in Trade and refresh. Confirm your key has ASX entitlement; no private ASX key was available for cloud validation.
+
+## Reset and notepad
 
 - **Settings → Reset profile:** type `RESET` to permanently clear the profile, portfolio, fills, journal, securities, prices and notes, then return to fresh setup. This cannot be undone.
 - **Journal → Notepad:** create, search, edit and delete local notes. Save explicitly; unsaved drafts are protected when switching pages or notes. Save before closing the app.
 - Existing profiles upgrade without losing progress. Reset occurs only after explicit confirmation.
 
-Automatic ASX refresh and historical charts remain pending provider selection and licensing verification; see [Phase 4 research status](docs/market-data.md).
+Prices and charts require your own EODHD key; manual use needs no external account.
 
 ## Phase 3 · linked trading journal
 
@@ -24,7 +36,7 @@ Phase 2's manual securities, timestamped reference prices, BUY/SELL, brokerage, 
 
 Database migration 003 adds blank journals to existing Phase 2 fills, clearly marked as added after the fill. It does not invent an original thesis or rewrite accounting. New fills, cash movements and initial commentary commit together. Journal edits use optimistic version checks to prevent silently overwriting another window's changes.
 
-See [architecture and accounting rules](docs/architecture.md). Live market retrieval is Phase 4; pending orders, analytics and AI remain deferred. The app has no brokerage connection or real-money functionality.
+See [architecture and accounting rules](docs/architecture.md). Phase 4 adds end-of-day retrieval; pending orders, analytics and AI remain deferred. The app has no brokerage connection or real-money functionality.
 
 ## Open from your Mac desktop
 

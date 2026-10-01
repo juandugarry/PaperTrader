@@ -1,3 +1,4 @@
+import MarketPrices from "./MarketPrices";
 import {
   JournalFields,
   ContentSummary,
@@ -140,7 +141,7 @@ export default function TradingWorkspace({
       </div>
       {trading.portfolioValueMicros === null && (
         <p className="notice">
-          Add a manual current price for every open position to calculate
+          Add or refresh a reference price for every open position to calculate
           portfolio value and unrealised P&L.
         </p>
       )}
@@ -185,9 +186,12 @@ export default function TradingWorkspace({
                     <td>
                       {formatPrice(p.currentPriceMicros)}
                       <small className="security-name">
-                        {p.priceUpdatedAt
-                          ? new Date(p.priceUpdatedAt).toLocaleString("en-AU")
-                          : "No manual price"}
+                        {trading.securities.find((s) => s.id === p.securityId)
+                          ?.priceSource === "eodhd"
+                          ? `EODHD close · ${trading.securities.find((s) => s.id === p.securityId)?.priceAsOf}`
+                          : p.priceUpdatedAt
+                            ? `Manual · ${new Date(p.priceUpdatedAt).toLocaleString("en-AU")}`
+                            : "No reference price"}
                       </small>
                     </td>
                     <td>
@@ -305,6 +309,11 @@ export default function TradingWorkspace({
                 </div>
               </div>
               <div className="detail-body">
+                <MarketPrices
+                  snapshot={snapshot}
+                  security={selected}
+                  onChanged={onChanged}
+                />
                 <PriceEditor
                   key={`price-${selected.id}`}
                   security={selected}
@@ -334,9 +343,8 @@ export default function TradingWorkspace({
             <div className="empty">
               <h3>Your local trading workspace</h3>
               <p>
-                Add a security to record fills and manually update prices.
-                <br />
-                No live market connection is used.
+                Add an ASX security to record simulated fills, then refresh its
+                closing price or enter a manual reference price.
               </p>
             </div>
           )}
@@ -346,9 +354,9 @@ export default function TradingWorkspace({
       <div className="notice">
         <span aria-hidden="true">ⓘ</span>
         <p>
-          <strong>Simulated trading only.</strong> Prices and fills are manually
-          entered. Nothing is sent to an exchange or broker. Average entry
-          excludes brokerage; cost basis and P&L include it.
+          <strong>Simulated trading only.</strong> Fills are manually entered.
+          Nothing is sent to an exchange or broker. Average entry excludes
+          brokerage; cost basis and P&L include it.
         </p>
       </div>
     </>
@@ -416,11 +424,7 @@ function PriceEditor({
   security: Security;
   onSaved: (s: Snapshot) => void;
 }) {
-  const [price, setPriceText] = useState(
-      security.currentPriceMicros === null
-        ? ""
-        : moneyText(security.currentPriceMicros),
-    ),
+  const [price, setPriceText] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
@@ -456,9 +460,11 @@ function PriceEditor({
           </div>
         </label>
         <p className="muted">
-          {security.priceUpdatedAt
-            ? `Manually updated ${new Date(security.priceUpdatedAt).toLocaleString("en-AU")}`
-            : "No current price recorded."}{" "}
+          {security.priceSource === "eodhd"
+            ? "A manual update overrides the provider reference price."
+            : security.priceUpdatedAt
+              ? `Manually updated ${new Date(security.priceUpdatedAt).toLocaleString("en-AU")}`
+              : "No current price recorded."}{" "}
           Fills do not update this price.
         </p>
         {error && (

@@ -25,7 +25,7 @@ For a real desktop smoke test: run `npm run desktop`, create an Alex profile wit
 
 On a disposable simulation, add BEN and its full security name, buy 24 at 10.115 with 3.00 brokerage, and verify the review shows 245.76 outlay and 754.24 remaining cash. Confirm once; there must be one immutable fill. Set a manual current price of 10.60 and verify the timestamp, 254.40 position value, 8.64 unrealised P&L, and 1008.64 portfolio value. Sell 12 at 10.60 with 3.00 brokerage; verify 878.44 cash, 12 shares and 1.32 realised P&L. Close the remaining 12 at 9.95 with 3.00 brokerage; verify 994.84 cash, no open position and −5.16 realised P&L. Restart to verify persistence. Also test a rejected oversized buy and an oversell without any new history entries. These numbers are test fixtures, not seeded user data.
 
-Phase 3's web build, Rust/SQLite tests and Chromium checks can run here. The GitHub Actions workflow builds the universal macOS app; its remote result cannot be queried from this machine because GitHub API access is denied. The user has opened Phase 3 successfully on their Mac; release 0.3.1 still needs native validation.
+Phase 3's web build, Rust/SQLite tests and Chromium checks can run here. The GitHub Actions workflow builds the universal macOS app; its remote result cannot be queried from this machine because GitHub API access is denied. The user has opened Phase 3 successfully on their Mac; release 0.4.0 still needs native validation.
 
 ## Phase 3 journal smoke test
 
@@ -41,4 +41,18 @@ Use a disposable profile. In Journal → Notepad create a titled note, save it, 
 
 In Settings open Reset profile, cancel once and verify data remains. Open it again, type RESET and confirm. Verify onboarding returns; restart must still show onboarding. Create a fresh profile and verify only the chosen opening capital exists, with no old securities, prices, executions, journal entries or notes. An old second window must reject writes after reset; reopen it to load the fresh profile. Never perform this test against a portfolio you want to keep.
 
-Provider research is currently network-blocked; see [research status and required domains](market-data.md).
+Provider research succeeded; see [provider sources and integration](market-data.md).
+
+## Phase 4 smoke test
+
+Use a disposable profile and your own free EODHD key, entered in Settings on the Mac (never chat or a fixture). Verify save, Keychain permission prompt, restart presence and remove. Add a valid ASX ticker, refresh and verify an AUD closing reference price, EODHD source, actual session date and retrieval time. Check one-month/three-month/one-year charts, date exploration and adjusted-series label. Record a manual simulated fill and verify subsequent refresh leaves its price, cash and commentary intact while updating reference valuation.
+
+Disconnect networking and refresh: prior data must remain and the error must be visible. Verify an invalid key/unsupported ticker fails without fake quotes. Check the local request counter, one-minute cooldown, and bulk refresh when enough allowance remains. Opening or restarting the app must not fetch data automatically. Reset must return to onboarding and remove the profile credential/cache, while preserving anonymous request counts. Never reset a portfolio you want to keep.
+
+The explicitly invoked public-demo transport check is:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features public_demo_transport_and_history -- --ignored --nocapture
+```
+
+It uses EODHD's documented public AAPL demo only. It does not test ASX entitlement, Keychain or native IPC. HTTPS uses native trusted roots; never disable certificate verification to repair networking.

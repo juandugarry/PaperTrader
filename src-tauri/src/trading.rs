@@ -39,6 +39,10 @@ pub struct Security {
     pub name: String,
     pub current_price_micros: Option<i64>,
     pub price_updated_at: Option<String>,
+    pub price_source: String,
+    pub price_as_of: Option<String>,
+    pub market_fetched_at: Option<String>,
+    pub market_error: Option<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +90,7 @@ fn err(e: rusqlite::Error) -> String {
     e.to_string()
 }
 pub fn securities(c: &Connection) -> Result<Vec<Security>, String> {
-    let mut query=c.prepare("SELECT id,ticker,name,current_price_micros,price_updated_at FROM securities ORDER BY ticker").map_err(err)?;
+    let mut query=c.prepare("SELECT id,ticker,name,current_price_micros,price_updated_at,price_source,price_as_of,market_fetched_at,market_error FROM securities ORDER BY ticker").map_err(err)?;
     let rows = query
         .query_map([], |r| {
             Ok(Security {
@@ -95,6 +99,10 @@ pub fn securities(c: &Connection) -> Result<Vec<Security>, String> {
                 name: r.get(2)?,
                 current_price_micros: r.get(3)?,
                 price_updated_at: r.get(4)?,
+                price_source: r.get(5)?,
+                price_as_of: r.get(6)?,
+                market_fetched_at: r.get(7)?,
+                market_error: r.get(8)?,
             })
         })
         .map_err(err)?;
@@ -226,7 +234,7 @@ pub fn set_price(c: &Connection, input: SetPrice) -> Result<(), String> {
     if !(1..=MAX_MONEY).contains(&input.price_micros) {
         return Err("Enter a positive manual price within the supported limit.".into());
     }
-    if c.execute("UPDATE securities SET current_price_micros=?1,price_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?2",params![input.price_micros,input.security_id]).map_err(err)?!=1 {return Err("Security not found.".into());}
+    if c.execute("UPDATE securities SET current_price_micros=?1,price_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),price_source='manual',price_as_of=NULL,price_version=price_version+1 WHERE id=?2",params![input.price_micros,input.security_id]).map_err(err)?!=1 {return Err("Security not found.".into());}
     Ok(())
 }
 /// Called inside an IMMEDIATE transaction, preventing two app instances from spending the same cash.
