@@ -1,5 +1,6 @@
 pub mod domain;
 pub mod engine;
+pub mod journal;
 pub mod store;
 pub mod trading;
 
@@ -56,6 +57,16 @@ mod desktop {
             .map_err(|_| "Database lock unavailable")?
             .execute_trade(input)
     }
+    #[tauri::command]
+    fn save_journal(
+        input: super::journal::SaveJournal,
+        store: tauri::State<'_, Mutex<Store>>,
+    ) -> Result<Snapshot, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .save_journal(input)
+    }
     pub fn run() {
         tauri::Builder::default()
             .setup(|app| {
@@ -71,7 +82,8 @@ mod desktop {
                 create_profile,
                 create_security,
                 set_price,
-                execute_trade
+                execute_trade,
+                save_journal
             ])
             .run(tauri::generate_context!())
             .expect("Unable to start PaperTrader");

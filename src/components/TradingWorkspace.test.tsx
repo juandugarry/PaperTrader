@@ -26,6 +26,7 @@ function fresh(): Snapshot {
     startingCapitalMicros: 1_000_000_000,
     cashMicros: 1_000_000_000,
     createdAt: "2026-10-01T00:00:00Z",
+    journal: [],
     trading: {
       securities: [],
       positions: [],
@@ -244,5 +245,42 @@ describe("manual trading workflow", () => {
       priceMicros: 10_115_000,
     });
     expect(executeTrade).not.toHaveBeenCalled();
+  });
+  it("captures a journal plan in the reviewed buy and submits it with the fill", async () => {
+    vi.mocked(executeTrade).mockResolvedValue(bought());
+    const user = userEvent.setup();
+    render(<Harness initial={withSecurity()} />);
+    await user.click(screen.getByText("Entry plan & notes"));
+    await user.type(
+      screen.getByLabelText("Trading thesis"),
+      "Support may hold",
+    );
+    await user.type(
+      screen.getByLabelText("Entry trigger"),
+      "Bounce from support",
+    );
+    await user.type(screen.getByLabelText("Target price (AUD)"), "10.60");
+    await user.type(
+      screen.getByLabelText("Stop / invalidation price (AUD)"),
+      "9.95",
+    );
+    await user.type(screen.getByLabelText("Planned risk (AUD)"), "10");
+    await prepareBuy(user);
+    expect(executeTrade).not.toHaveBeenCalled();
+    await user.click(
+      screen.getByRole("button", { name: "Confirm simulated fill" }),
+    );
+    await screen.findByRole("status");
+    expect(executeTrade).toHaveBeenCalledWith(
+      expect.objectContaining({
+        journal: expect.objectContaining({
+          thesis: "Support may hold",
+          entryTrigger: "Bounce from support",
+          targetMicros: 10_600_000,
+          stopMicros: 9_950_000,
+          plannedRiskMicros: 10_000_000,
+        }),
+      }),
+    );
   });
 });

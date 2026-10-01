@@ -8,6 +8,7 @@ vi.mock("./api", () => ({
   desktopAvailable: true,
   getSnapshot: vi.fn(),
   createProfile: vi.fn(),
+  saveJournal: vi.fn(),
   createSecurity: vi.fn(),
   setPrice: vi.fn(),
   executeTrade: vi.fn(),
@@ -20,6 +21,7 @@ const portfolio: Snapshot = {
   startingCapitalMicros: 1_000_000_000,
   cashMicros: 1_000_000_000,
   createdAt: "2026-10-01T00:00:00Z",
+  journal: [],
   trading: {
     securities: [],
     positions: [],

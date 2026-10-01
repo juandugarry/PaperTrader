@@ -1,4 +1,4 @@
-# Phase 2 architecture
+# Phase 3 architecture
 
 ## Structure
 
@@ -13,15 +13,17 @@ src-tauri/
   src/domain.rs                   profile and monetary bounds
   src/engine.rs                   pure average-cost trading/accounting engine
   src/trading.rs                  SQLite trading adapter and derived snapshots
+  src/journal.rs                  versioned commentary and derived trade lifecycles
   src/store.rs                    migrations, profile, transaction orchestration
   src/lib.rs                      commands and platform application-data directory
   migrations/001_foundation.sql   released Phase 1 schema; unchanged
   migrations/002_manual_trading.sql
+  migrations/003_trading_journal.sql
 ```
 
 React 19, TypeScript 5.8, Vite 6, Tauri 2 and bundled SQLite through rusqlite. No new runtime dependency is needed for trading. Test dependencies are Vitest, Testing Library, jsdom and Rust's built-in runner. Both dependency lockfiles are committed; Rust is pinned in rust-toolchain.toml.
 
-All filesystem/database access remains in Rust. Commands create a profile, load a snapshot, add a security, update a manual price, and record an execution. React cannot submit arbitrary SQL, set a cash balance or edit a past fill. The engine has no persistence or UI dependency.
+All filesystem/database access remains in Rust. Commands create a profile, load a snapshot, add a security, update a manual price, record an execution with optional commentary, and save a journal revision. React cannot submit arbitrary SQL, set a cash balance or edit a past fill. The engine has no persistence or UI dependency.
 
 ## Schema version 2
 
@@ -63,4 +65,26 @@ Each reviewed fill has a request ID. Retrying an identical request returns the e
 
 The database-level BEN acceptance test creates a disposable $1,000 portfolio, buys 24 BEN at $10.115 with $3 brokerage, and checks exactly $754.24 cash. It then marks, partially sells and closes the position, checking cash/P&L reconciliation. Other tests cover multiple buys, cost-allocation remainder, overselling, insufficient cash, invalid/overflow input, rollback, duplicate retries, immutable fills, migration, prices and restart persistence. Test data is not installed into the application.
 
-Phase 3 adds journal thesis, targets/invalidation, notes, linking and exit reviews. Journal currently exposes the immutable fill history. Live market-data providers, charts, pending orders, analytics and AI remain deferred. Backup/import/reset, editable profile settings, additional portfolios and signed distribution also remain outside Phase 2. Brokerage is adjustable on each fill.
+Phase 4 will investigate licensed ASX data retrieval before selecting a provider. Pending orders, charts, analytics, AI, backup/import/reset and signed distribution remain deferred. Brokerage is adjustable on each fill.
+
+## Schema version 3 and journal behaviour
+
+`journal_entries` has one immutable link per execution, a creation time, and a flag indicating whether it was created with the fill. `journal_revisions` stores append-only full snapshots of commentary with an execution link, monotonically increasing version and UTC save time. The first revision contains the commentary supplied with a new fill (possibly blank); later edits never overwrite it. UPDATE/DELETE triggers protect journal links and revisions.
+
+Entry fields: thesis, entry trigger, optional target and invalidation prices, optional planned AUD risk, and notes. Exit fields: exit reason, optional yes/no plan adherence, what went well, what went poorly, what would change, and notes. Each text field is capped at 4,000 characters. Prices use micro-AUD precision; planned risk accepts whole cents. Fields remain optional so a user can complete the journal after a fill. The list prompts for a missing thesis or exit reason without claiming this is full review completeness.
+
+Migration 003 backfills one blank revision per existing execution and marks it as added after the fill. Original execution timestamps and accounting stay unchanged. No historical rationale is inferred. Migrations 001/002 remain unchanged.
+
+New fill, ledger entry, journal link and first revision commit in one IMMEDIATE transaction. A failed journal write rolls back the financial writes. Retries compare submitted commentary with revision 1, so a later edit does not cause the same fill to execute again. Changed payloads reusing a fill request ID are rejected.
+
+Commentary saves include the displayed version. A stale version is rejected with a reload action instead of overwriting newer work. Identical content at the current version is a no-op. A retry after an ambiguous save can safely reload to inspect the result. Edits do not accept execution amounts, quantities or timestamps.
+
+## Position lifecycles and journal P&L
+
+Lifecycles are derived by replaying immutable executions in ID order, independently per security. A BUY from zero shares starts a lifecycle whose stable ID is that execution's ID. Additional buys and partial sells join that lifecycle. A sale to zero shares closes it; a later buy starts a new one. Fills interleaved between securities remain in their own lifecycles. Every fill has its own editable plan/review, allowing additional buys and staged exits to retain distinct reasoning.
+
+The journal reuses the accounting engine twice: with actual brokerage for net results, and with zero brokerage for gross results on the same cent-rounded notionals. Realised transaction costs equal gross minus net; on partial exits these include allocated entry brokerage plus that exit's brokerage. Total brokerage paid also includes fees attributable to still-open shares, and is labelled separately. A lifecycle's net realised P&L excludes unrealised movements. Each exit has gross/net P&L and percentage return over the released fee-inclusive cost basis. Aggregate realised return uses cumulative released cost basis; after a full close this equals total buy cash outlay.
+
+Dates, prices, quantity, brokerage and outcomes come from executions and are never commentary fields. The original opening plan is retained in the first BUY's revision history; the Trade position view displays its latest commentary target/invalidation and offers its full latest plan. Targets and stops do not submit orders or change fill logic. Manual reference prices and their timestamps remain independent.
+
+UI interaction tests mock IPC explicitly. Rust tests exercise SQLite linking, revisions, optimistic conflicts, rollback, Phase 2 migration, partial/full exit costs, additional buys/rebuys, original-plan retention and restart persistence. macOS-native build validation still belongs to GitHub Actions and a Mac; Linux headless tests do not establish desktop readiness.

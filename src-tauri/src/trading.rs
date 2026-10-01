@@ -28,6 +28,8 @@ pub struct ExecuteTrade {
     pub quantity: i64,
     pub price_micros: i64,
     pub brokerage_micros: i64,
+    #[serde(default)]
+    pub journal: Option<crate::journal::Content>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,10 +250,26 @@ pub fn execute(c: &Connection, input: ExecuteTrade) -> Result<(), String> {
                 input.brokerage_micros,
             )
         {
+            let submitted = input.journal.clone().unwrap_or_default();
+            let id: i64 = c
+                .query_row(
+                    "SELECT id FROM executions WHERE request_id=?1",
+                    [&input.request_id],
+                    |r| r.get(0),
+                )
+                .map_err(err)?;
+            if crate::journal::original(c, id)? != submitted {
+                return Err(
+                    "This request identifier was already used with different journal content."
+                        .into(),
+                );
+            }
             return Ok(());
         }
         return Err("This request identifier was already used for a different trade.".into());
     }
+    let content = input.journal.clone().unwrap_or_default();
+    content.validate(input.side)?;
     let cash: i64 = c
         .query_row(
             "SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1",
@@ -286,5 +304,6 @@ pub fn execute(c: &Connection, input: ExecuteTrade) -> Result<(), String> {
     c.execute("INSERT INTO executions(request_id,portfolio_id,security_id,side,quantity,price_micros,brokerage_micros,notional_micros) VALUES(?1,1,?2,?3,?4,?5,?6,?7)",params![input.request_id,input.security_id,input.side.as_str(),input.quantity,input.price_micros,input.brokerage_micros,effect.notional]).map_err(err)?;
     let execution_id = c.last_insert_rowid();
     c.execute("INSERT INTO cash_ledger(portfolio_id,kind,amount_micros,execution_id,description) VALUES(1,?1,?2,?3,?4)",params![input.side.as_str(),effect.cash_delta,execution_id,format!("Manual simulated {}",input.side.as_str())]).map_err(err)?;
+    crate::journal::create(c, execution_id, input.side, &content)?;
     Ok(())
 }

@@ -2,19 +2,21 @@
 
 A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, cloud account, market-data provider, AI integration or real brokerage connection.
 
-## Phase 2 · manual paper trading
+## Phase 3 · linked trading journal
 
-- Fresh local trader profile, virtual starting capital and default brokerage (AUD / ASX).
-- Create/search local ASX securities and manually update reference prices with timestamps.
-- Review and record simulated BUY/SELL fills with per-fill brokerage.
-- Cash ledger, whole-share positions, average entry, cost basis, realised/unrealised P&L and total return.
-- Immutable execution history in Trade and Journal; SQLite persistence and versioned migrations.
+- Capture buy thesis, entry trigger, target, stop/invalidation, planned risk and notes alongside a simulated fill, or complete them later.
+- Capture sell reasons, plan adherence, what went well/poorly and what you would change.
+- Automatically link each fill to its journal, and group additional buys/partial sells into the same position lifecycle.
+- Review gross/net realised P&L, allocated transaction costs, percentage return, fill facts and commentary together.
+- Edit commentary by adding a revision; original plans, earlier commentary, executions and cash entries remain preserved.
+- Filter open/closed journal trades and search by ticker/company. Rebuying after a full close starts a new lifecycle.
+- View the opening plan's current target/invalidation in Trade. These are journal levels, not automatic orders.
 
-No securities, trades or personal balances are imported or seeded. The BEN scenario is automated test data only. An existing Phase 1 database migrates in place without deleting its local profile or opening-capital entry. No real orders, live market data, cloud account or AI are involved.
+Phase 2's manual securities, timestamped reference prices, BUY/SELL, brokerage, average-cost positions and portfolio dashboard remain available. No personal balances, trades, securities or journal commentary are imported or seeded. BEN is automated test data only.
 
-Buy brokerage is included in average cost basis; sell brokerage reduces proceeds. Execution totals round to cents (half up), while fill prices retain up to six decimal places. A partial sale allocates cost proportionally; a full close consumes the exact remaining basis. Unpriced positions show valuation as unavailable. See [accounting rules](docs/architecture.md).
+Database migration 003 adds blank journals to existing Phase 2 fills, clearly marked as added after the fill. It does not invent an original thesis or rewrite accounting. New fills, cash movements and initial commentary commit together. Journal edits use optimistic version checks to prevent silently overwriting another window's changes.
 
-Trading thesis, targets/stops and exit reviews are Phase 3. Pending market/limit/stop orders remain deferred.
+See [architecture and accounting rules](docs/architecture.md). Live market retrieval is Phase 4; pending orders, analytics and AI remain deferred. The app has no brokerage connection or real-money functionality.
 
 ## Open from your Mac desktop
 
@@ -31,7 +33,7 @@ cd PaperTrader
 ./Install\ PaperTrader.command
 ```
 
-A successful GitHub Actions build is required before a downloadable artifact exists. Phase 2 macOS packaging has not been verified on this Linux machine. The earlier Phase 1 build was opened successfully on the user’s Mac.
+A successful GitHub Actions build is required before a downloadable artifact exists. Phase 3 macOS packaging has not been verified on this Linux machine. The earlier Phase 1 build was opened successfully on the user’s Mac.
 
 ## Develop on macOS
 

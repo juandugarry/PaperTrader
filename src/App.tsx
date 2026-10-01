@@ -6,9 +6,8 @@ import {
   type Snapshot,
 } from "./api";
 import { formatMoney, parseMoney } from "./domain/money";
-import TradingWorkspace, {
-  ExecutionHistory,
-} from "./components/TradingWorkspace";
+import TradingWorkspace from "./components/TradingWorkspace";
+import JournalWorkspace from "./components/JournalWorkspace";
 
 type Page = "Trade" | "Journal" | "Learn" | "Settings";
 const lessons = [
@@ -71,7 +70,7 @@ export default function App() {
             profile.
           </p>
           <p className="muted">
-            Phase 2 · No cloud account · Fictional money only
+            Phase 3 · No cloud account · Fictional money only
           </p>
         </section>
       </div>
@@ -159,21 +158,13 @@ export default function App() {
                     : "An independent portfolio, stored on this device."}
             </p>
           </div>
-          <span className="phase">PHASE 2</span>
+          <span className="phase">PHASE 3</span>
         </div>
         {page === "Trade" && (
           <TradingWorkspace snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Journal" && (
-          <>
-            <div className="notice">
-              <p>
-                Your immutable fill history is available now. Trading thesis,
-                targets, stops and exit reviews will arrive in Phase 3.
-              </p>
-            </div>
-            <ExecutionHistory executions={snapshot.trading.executions} />
-          </>
+          <JournalWorkspace snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Learn" && (
           <div className="learn-layout">

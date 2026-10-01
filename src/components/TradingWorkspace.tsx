@@ -1,3 +1,9 @@
+import {
+  JournalFields,
+  ContentSummary,
+  emptyDraft,
+  draftToContent,
+} from "./JournalFields";
 import { useState, type FormEvent } from "react";
 import {
   createSecurity,
@@ -88,6 +94,12 @@ export default function TradingWorkspace({
     `${s.ticker} ${s.name}`.toLowerCase().includes(query.toLowerCase()),
   );
   const holding = trading.positions.find((p) => p.securityId === selected?.id);
+  const openingPlan = (securityId: number) =>
+    snapshot.journal
+      .find((t) => t.securityId === securityId && t.closedAt === null)
+      ?.fills[0]?.revisions.at(-1)?.content;
+  const selectedPlan = selected ? openingPlan(selected.id) : undefined;
+
   const metrics = [
     ["Available cash", snapshot.cashMicros],
     ["Capital invested", trading.capitalInvestedMicros],
@@ -152,6 +164,7 @@ export default function TradingWorkspace({
                   <th>Avg. entry</th>
                   <th>Current price</th>
                   <th>Value</th>
+                  <th>Target / invalidation</th>
                   <th>Unrealised P&L</th>
                 </tr>
               </thead>
@@ -181,6 +194,17 @@ export default function TradingWorkspace({
                       {p.valueMicros === null
                         ? "—"
                         : formatMoney(p.valueMicros)}
+                    </td>
+                    <td>
+                      {openingPlan(p.securityId)?.targetMicros == null
+                        ? "Not set"
+                        : formatPrice(openingPlan(p.securityId)!.targetMicros)}
+                      <small className="security-name">
+                        Stop{" "}
+                        {openingPlan(p.securityId)?.stopMicros == null
+                          ? "not set"
+                          : formatPrice(openingPlan(p.securityId)!.stopMicros)}
+                      </small>
                     </td>
                     <td
                       className={
@@ -286,6 +310,16 @@ export default function TradingWorkspace({
                   security={selected}
                   onSaved={onChanged}
                 />
+                {selectedPlan && (
+                  <details className="opening-plan">
+                    <summary>Opening plan · latest commentary</summary>
+                    <ContentSummary side="BUY" content={selectedPlan} />
+                    <p className="muted">
+                      Targets and stops are journal levels. They do not execute
+                      orders.
+                    </p>
+                  </details>
+                )}
                 <TradeTicket
                   key={`trade-${selected.id}`}
                   security={selected}
@@ -459,6 +493,7 @@ function TradeTicket({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [success, setSuccess] = useState("");
+  const [journalDraft, setJournalDraft] = useState(emptyDraft);
   function prepare(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -474,6 +509,7 @@ function TradeTicket({
         requestId: crypto.randomUUID(),
         securityId: security.id,
         side,
+        journal: draftToContent(journalDraft, side),
       });
     } catch (e) {
       setError(message(e));
@@ -491,6 +527,7 @@ function TradeTicket({
         quantity,
         priceMicros,
         brokerageMicros,
+        journal,
       } = review;
       onSaved(
         await executeTrade({
@@ -500,6 +537,7 @@ function TradeTicket({
           quantity,
           priceMicros,
           brokerageMicros,
+          journal,
         }),
       );
       setSuccess(
@@ -508,6 +546,7 @@ function TradeTicket({
       setReview(null);
       setQuantity("");
       setPriceText("");
+      setJournalDraft(emptyDraft());
     } catch (e) {
       setError(message(e));
     } finally {
@@ -553,6 +592,16 @@ function TradeTicket({
             Recorded fills are permanent. Confirm the quantity, price and
             brokerage before continuing.
           </p>
+          {review.journal && (
+            <details className="review-plan">
+              <summary>
+                {review.side === "BUY"
+                  ? "Review entry plan"
+                  : "Review exit reflection"}
+              </summary>
+              <ContentSummary side={review.side} content={review.journal} />
+            </details>
+          )}
           <div className="review-actions">
             <button disabled={busy} onClick={() => void confirm()}>
               {busy ? "Recording…" : "Confirm simulated fill"}
@@ -619,6 +668,20 @@ function TradeTicket({
                 onChange={(e) => setBrokerage(e.target.value)}
               />
             </label>
+            <details className="capture-journal">
+              <summary>
+                {side === "BUY" ? "Entry plan & notes" : "Exit review & notes"}
+              </summary>
+              <p className="muted">
+                Capture your thinking now, or complete it later in Journal.
+                Earlier versions are preserved.
+              </p>
+              <JournalFields
+                side={side}
+                draft={journalDraft}
+                onChange={setJournalDraft}
+              />
+            </details>
             <button type="submit">Review simulated {side.toLowerCase()}</button>
           </fieldset>
         </form>

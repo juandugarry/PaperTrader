@@ -1,4 +1,5 @@
 use crate::domain::validate_setup;
+use crate::journal::{self, JournalTrade, SaveJournal};
 use crate::trading::{self, CreateSecurity, ExecuteTrade, SetPrice, TradingSnapshot};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ pub struct Snapshot {
     pub cash_micros: i64,
     pub created_at: String,
     pub trading: TradingSnapshot,
+    pub journal: Vec<JournalTrade>,
 }
 pub struct Store {
     connection: Connection,
@@ -40,7 +42,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 2 {
+        if version > 3 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -56,6 +58,14 @@ impl Store {
             tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
                 .map_err(|e| e.to_string())?;
             tx.pragma_update(None, "user_version", 2)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        if version < 3 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/003_trading_journal.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 3)
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
@@ -87,6 +97,7 @@ impl Store {
             return Ok(None);
         };
         let trading = trading::read(&tx, cash_micros, starting_capital_micros)?;
+        let journal = journal::read(&tx)?;
         Ok(Some(Snapshot {
             display_name,
             default_brokerage_micros,
@@ -96,6 +107,7 @@ impl Store {
             cash_micros,
             created_at,
             trading,
+            journal,
         }))
     }
     fn mutate(
@@ -118,6 +130,7 @@ impl Store {
         let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
         // Check all derived totals and limits before committing the mutation.
         trading::read(&tx, cash, starting)?;
+        journal::read(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         self.snapshot()?
             .ok_or_else(|| "Portfolio unavailable".into())
@@ -130,6 +143,9 @@ impl Store {
     }
     pub fn execute_trade(&mut self, input: ExecuteTrade) -> Result<Snapshot, String> {
         self.mutate(|c| trading::execute(c, input))
+    }
+    pub fn save_journal(&mut self, input: SaveJournal) -> Result<Snapshot, String> {
+        self.mutate(|c| journal::save(c, input))
     }
     pub fn create_profile(&mut self, input: CreateProfile) -> Result<Snapshot, String> {
         validate_setup(
@@ -237,7 +253,7 @@ mod tests {
     #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 3).unwrap();
+        c.pragma_update(None, "user_version", 4).unwrap();
         assert!(Store::from_connection(c).is_err());
     }
     fn prepared() -> Store {
@@ -264,6 +280,7 @@ mod tests {
             quantity,
             price_micros: price,
             brokerage_micros: brokerage,
+            journal: None,
         }
     }
     #[test]
@@ -555,5 +572,246 @@ mod tests {
             db.snapshot().unwrap().unwrap().trading.securities[0].current_price_micros,
             Some(10_600_000)
         );
+    }
+    fn entry_plan() -> journal::Content {
+        journal::Content {
+            thesis: "Support may hold".into(),
+            entry_trigger: "Bounce at support".into(),
+            target_micros: Some(10_600_000),
+            stop_micros: Some(9_950_000),
+            planned_risk_micros: Some(10_000_000),
+            notes: "Watch volume".into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn journal_records_entry_with_fill_and_keeps_original_after_edits() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        let mut buy = fill(1, BUY, 24, 10_115_000, 3_000_000);
+        buy.journal = Some(entry_plan());
+        let s = db.execute_trade(buy).unwrap();
+        let entry = &s.journal[0].fills[0];
+        assert!(entry.captured_with_fill);
+        assert_eq!(entry.revisions[0].content, entry_plan());
+        assert_eq!(s.journal[0].id, 1);
+        let mut amended = entry_plan();
+        amended.thesis = "Updated explanation".into();
+        let s = db
+            .save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 1,
+                content: amended.clone(),
+            })
+            .unwrap();
+        assert_eq!(s.cash_micros, 754_240_000);
+        assert_eq!(s.trading.executions[0].price_micros, 10_115_000);
+        let revisions = &s.journal[0].fills[0].revisions;
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].content.thesis, "Support may hold");
+        assert_eq!(revisions[1].content.thesis, "Updated explanation");
+        assert!(db
+            .save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 1,
+                content: entry_plan()
+            })
+            .is_err());
+        let s = db
+            .save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 2,
+                content: amended,
+            })
+            .unwrap();
+        assert_eq!(s.journal[0].fills[0].revisions.len(), 2);
+        assert!(db
+            .connection
+            .execute("UPDATE journal_revisions SET thesis='rewritten'", [])
+            .is_err());
+        assert!(db
+            .connection
+            .execute("DELETE FROM journal_entries", [])
+            .is_err());
+    }
+    #[test]
+    fn journal_partial_and_full_exit_reconcile_gross_fees_net_and_link_review() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        let mut sell = fill(2, SELL, 12, 10_600_000, 3_000_000);
+        sell.journal = Some(journal::Content {
+            exit_reason: "Reached target".into(),
+            followed_plan: Some(true),
+            went_well: "Kept position size small".into(),
+            went_poorly: "Entered early".into(),
+            would_change: "Wait for confirmation".into(),
+            ..Default::default()
+        });
+        let s = db.execute_trade(sell).unwrap();
+        let t = &s.journal[0];
+        assert!(t.closed_at.is_none());
+        assert_eq!(t.quantity_open, 12);
+        assert_eq!(t.gross_pnl_micros, 5_820_000);
+        assert_eq!(t.realised_costs_micros, 4_500_000);
+        assert_eq!(t.net_pnl_micros, 1_320_000);
+        assert_eq!(t.brokerage_paid_micros, 6_000_000);
+        assert_eq!(t.fills[1].revisions[0].content.followed_plan, Some(true));
+        assert_eq!(t.fills[1].released_cost_micros, Some(122_880_000));
+        let s = db
+            .execute_trade(fill(3, SELL, 12, 9_950_000, 3_000_000))
+            .unwrap();
+        let t = &s.journal[0];
+        assert!(t.closed_at.is_some());
+        assert_eq!(t.quantity_open, 0);
+        assert_eq!(t.gross_pnl_micros, 3_840_000);
+        assert_eq!(t.realised_costs_micros, 9_000_000);
+        assert_eq!(t.net_pnl_micros, -5_160_000);
+        assert_eq!(t.realised_basis_micros, 245_760_000);
+        assert_eq!(t.net_pnl_micros, s.trading.realised_pnl_micros);
+    }
+    #[test]
+    fn journal_groups_additional_buys_partial_sells_and_starts_new_after_close() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.execute_trade(fill(1, BUY, 10, 10_000_000, 3_000_000))
+            .unwrap();
+        db.execute_trade(fill(2, BUY, 10, 12_000_000, 3_000_000))
+            .unwrap();
+        let s = db
+            .execute_trade(fill(3, SELL, 5, 15_000_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.journal.len(), 1);
+        assert_eq!(s.journal[0].quantity_bought, 20);
+        assert_eq!(s.journal[0].fills.len(), 3);
+        assert_eq!(s.journal[0].net_pnl_micros, 15_500_000);
+        db.execute_trade(fill(4, SELL, 15, 9_000_000, 3_000_000))
+            .unwrap();
+        let s = db
+            .execute_trade(fill(5, BUY, 2, 8_000_000, 3_000_000))
+            .unwrap();
+        assert_eq!(s.journal.len(), 2);
+        assert_eq!(s.journal[0].net_pnl_micros, -22_000_000);
+        assert_eq!(s.journal[1].id, 5);
+        assert_eq!(s.journal[1].entry_cost_micros, 19_000_000);
+        assert_eq!(s.journal[1].net_pnl_micros, 0);
+    }
+    #[test]
+    fn failed_journal_write_rolls_back_cash_and_execution_and_bad_content_is_rejected() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        db.connection.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON journal_revisions BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(db.execute_trade(fill(1, BUY, 1, 10_000_000, 0)).is_err());
+        let s = db.snapshot().unwrap().unwrap();
+        assert_eq!(s.cash_micros, 1_000_000_000);
+        assert!(s.journal.is_empty());
+        assert!(s.trading.executions.is_empty());
+        db.connection
+            .execute_batch("DROP TRIGGER fail_journal;")
+            .unwrap();
+        let mut buy = fill(1, BUY, 1, 10_000_000, 0);
+        buy.journal = Some(journal::Content {
+            planned_risk_micros: Some(-1),
+            ..Default::default()
+        });
+        assert!(db.execute_trade(buy).is_err());
+        db.execute_trade(fill(1, BUY, 1, 10_000_000, 0)).unwrap();
+        assert!(db
+            .save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 1,
+                content: journal::Content {
+                    exit_reason: "Wrong side".into(),
+                    ..Default::default()
+                }
+            })
+            .is_err());
+        assert!(db
+            .save_journal(SaveJournal {
+                execution_id: 99,
+                expected_version: 1,
+                content: entry_plan()
+            })
+            .is_err());
+        assert!(db
+            .save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 1,
+                content: journal::Content {
+                    thesis: "a".repeat(4001),
+                    ..Default::default()
+                }
+            })
+            .is_err());
+    }
+    #[test]
+    fn v2_migration_backfills_blank_journals_and_preserves_fill_and_cash() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(include_str!("../migrations/001_foundation.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
+            .unwrap();
+        c.execute_batch("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market) VALUES(1,'Legacy',3000000,'AUD','ASX'); INSERT INTO portfolios(id,name) VALUES(1,'Portfolio'); INSERT INTO cash_ledger(portfolio_id,kind,amount_micros,description) VALUES(1,'opening_capital',1000000000,'Starting capital'); INSERT INTO securities(id,ticker,name) VALUES(1,'BEN','Bank'); INSERT INTO executions(id,request_id,portfolio_id,security_id,side,quantity,price_micros,brokerage_micros,notional_micros) VALUES(42,'legacy',1,1,'BUY',24,10115000,3000000,242760000); INSERT INTO cash_ledger(portfolio_id,kind,amount_micros,execution_id,description) VALUES(1,'BUY',-245760000,42,'Manual buy'); PRAGMA user_version=2;").unwrap();
+        let mut db = Store::from_connection(c).unwrap();
+        let s = db.snapshot().unwrap().unwrap();
+        assert_eq!(s.cash_micros, 754_240_000);
+        assert_eq!(s.trading.executions[0].id, 42);
+        let entry = &s.journal[0].fills[0];
+        assert!(!entry.captured_with_fill);
+        assert_eq!(entry.revisions[0].content, journal::Content::default());
+        let s = db
+            .save_journal(SaveJournal {
+                execution_id: 42,
+                expected_version: 1,
+                content: entry_plan(),
+            })
+            .unwrap();
+        assert_eq!(s.journal[0].fills[0].revisions.len(), 2);
+        assert_eq!(s.cash_micros, 754_240_000);
+    }
+    #[test]
+    fn journal_and_versions_persist_after_restart_and_trade_retries_compare_original() {
+        use crate::engine::Side::*;
+        let path = database_path("journal");
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            db.create_security(CreateSecurity {
+                ticker: "BEN".into(),
+                name: "Bank".into(),
+            })
+            .unwrap();
+            let mut buy = fill(1, BUY, 24, 10_115_000, 3_000_000);
+            buy.journal = Some(entry_plan());
+            db.execute_trade(buy).unwrap();
+            let mut changed = entry_plan();
+            changed.notes = "Review later".into();
+            db.save_journal(SaveJournal {
+                execution_id: 1,
+                expected_version: 1,
+                content: changed,
+            })
+            .unwrap();
+        }
+        {
+            let mut db = Store::open(&path).unwrap();
+            let mut retry = fill(1, BUY, 24, 10_115_000, 3_000_000);
+            retry.journal = Some(entry_plan());
+            let s = db.execute_trade(retry).unwrap();
+            assert_eq!(s.journal[0].fills[0].revisions.len(), 2);
+            assert_eq!(s.trading.executions.len(), 1);
+            assert_eq!(
+                s.journal[0].fills[0].revisions[1].content.notes,
+                "Review later"
+            );
+            let mut conflict = fill(1, BUY, 24, 10_115_000, 3_000_000);
+            conflict.journal = Some(journal::Content {
+                thesis: "Different plan".into(),
+                ..Default::default()
+            });
+            assert!(db.execute_trade(conflict).is_err());
+        }
+        std::fs::remove_file(path).unwrap();
     }
 }
