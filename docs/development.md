@@ -56,3 +56,28 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features p
 ```
 
 It uses EODHD's documented public AAPL demo only. It does not test ASX entitlement, Keychain or native IPC. HTTPS uses native trusted roots; never disable certificate verification to repair networking.
+
+## Check Mac-only credential code from Linux
+
+Linux headless tests do not compile the macOS Keychain branch. A separate temporary crate can type-check that actual source for Apple Silicon without linking a native app or accessing a Keychain. This check reproduced and verified the fix for the 0.4.0 error-type mismatch. It complements the full Mac CI build.
+
+From the repository root with Rust activated:
+
+```sh
+rustup target add aarch64-apple-darwin
+mkdir -p /tmp/papertrader-mac-check
+cat > /tmp/papertrader-mac-check/Cargo.toml <<EOF
+[package]
+name = "papertrader_mac_credentials_check"
+version = "0.1.0"
+edition = "2021"
+[lib]
+path = "$(pwd)/src-tauri/src/credentials.rs"
+[dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+EOF
+cargo check --manifest-path /tmp/papertrader-mac-check/Cargo.toml --target aarch64-apple-darwin
+cargo clippy --manifest-path /tmp/papertrader-mac-check/Cargo.toml --locked --target aarch64-apple-darwin -- -D warnings
+```
+
+Keep the temporary crate's keyring version aligned with the application's lockfile when dependencies change. GitHub's API remains blocked in this environment, but the public Actions run/job HTML is accessible for step outcomes; detailed logs require sign-in.

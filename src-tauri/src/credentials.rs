@@ -2,7 +2,7 @@
 #[cfg(target_os = "macos")]
 fn entry(profile_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("com.papertrader.desktop.eodhd", profile_id)
-        .map_err(|_| "Unable to access macOS Keychain.")
+        .map_err(|_| "Unable to access macOS Keychain.".to_string())
 }
 #[cfg(target_os = "macos")]
 pub fn load(profile_id: &str) -> Result<Option<String>, String> {
@@ -16,7 +16,7 @@ pub fn load(profile_id: &str) -> Result<Option<String>, String> {
 pub fn save(profile_id: &str, key: &str) -> Result<(), String> {
     entry(profile_id)?
         .set_password(key)
-        .map_err(|_| "Unable to save the key in macOS Keychain.")
+        .map_err(|_| "Unable to save the key in macOS Keychain.".to_string())
 }
 #[cfg(target_os = "macos")]
 pub fn remove(profile_id: &str) -> Result<(), String> {

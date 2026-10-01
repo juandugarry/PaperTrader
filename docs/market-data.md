@@ -50,3 +50,7 @@ Migration 005 preserves existing profiles and manual reference prices. Reset rem
 Cloud tests cover exact parsing, malformed responses, partial failures, valuation rollback, quota/cooldown/concurrency, v4 migration, restart persistence, reset during refresh and concurrent manual-price changes. Frontend tests mock IPC for key setup/removal, refresh outcomes, cached charts, allowance and adjusted-series interaction. A real HTTPS smoke using EODHD's documented public AAPL demo returned 251 daily rows; it verifies provider transport and parsing, not ASX entitlement. That optional network test is ignored in the normal offline test suite and was run explicitly.
 
 No user's key is configured in this cloud environment. A private ASX request, macOS Keychain prompts and native desktop IPC still require validation on the user's Mac. The universal macOS build runs in GitHub Actions; its result cannot be queried here because GitHub API access remains forbidden. No paid subscription or provider dataset is bundled.
+
+## Next-build note
+
+The user suggested limiting refreshes to about three. Each installation uses its own user-entered EODHD key; no provider key is bundled or shared by PaperTrader. Users sharing the same key would share EODHD's account allowance, and local counters cannot coordinate across machines. For the next build, revisit a three-refresh limit and distinguish per-stock versus whole-portfolio refreshes from provider requests (one stock consumes one request). This suggestion is recorded for later, not implemented in 0.4.0.
