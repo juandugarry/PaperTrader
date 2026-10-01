@@ -1,6 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 export interface Snapshot {
   displayName: string;
+  profileId: string;
+  notes: Note[];
   defaultBrokerageMicros: number;
   currency: string;
   primaryMarket: string;
@@ -16,9 +18,24 @@ export interface CreateProfile {
   defaultBrokerageMicros: number;
 }
 export const desktopAvailable = isTauri();
-export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
+let currentProfileId: string | null = null;
+function remember<T extends Snapshot | null>(snapshot: T): T {
+  currentProfileId = snapshot?.profileId ?? null;
+  return snapshot;
+}
+function profileInvoke(command: string, input: unknown): Promise<Snapshot> {
+  if (!currentProfileId)
+    return Promise.reject(
+      new Error("Reopen your local profile before continuing."),
+    );
+  return invoke<Snapshot>(command, { profileId: currentProfileId, input }).then(
+    remember,
+  );
+}
+export const getSnapshot = () =>
+  invoke<Snapshot | null>("get_snapshot").then(remember);
 export const createProfile = (input: CreateProfile) =>
-  invoke<Snapshot>("create_profile", { input });
+  invoke<Snapshot>("create_profile", { input }).then(remember);
 export type Side = "BUY" | "SELL";
 export interface Security {
   id: number;
@@ -73,11 +90,11 @@ export interface TradeInput {
   brokerageMicros: number;
 }
 export const createSecurity = (input: { ticker: string; name: string }) =>
-  invoke<Snapshot>("create_security", { input });
+  profileInvoke("create_security", input);
 export const setPrice = (input: { securityId: number; priceMicros: number }) =>
-  invoke<Snapshot>("set_price", { input });
+  profileInvoke("set_price", input);
 export const executeTrade = (input: TradeInput) =>
-  invoke<Snapshot>("execute_trade", { input });
+  profileInvoke("execute_trade", input);
 export interface JournalContent {
   thesis: string;
   entryTrigger: string;
@@ -127,4 +144,30 @@ export const saveJournal = (input: {
   executionId: number;
   expectedVersion: number;
   content: JournalContent;
-}) => invoke<Snapshot>("save_journal", { input });
+}) => profileInvoke("save_journal", input);
+
+export interface Note {
+  id: number;
+  title: string;
+  body: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+export const saveNote = (input: {
+  id: number | null;
+  expectedVersion: number | null;
+  title: string;
+  body: string;
+}) => profileInvoke("save_note", input);
+export const deleteNote = (input: { id: number; expectedVersion: number }) =>
+  profileInvoke("delete_note", input);
+export async function resetProfile(confirmation: string): Promise<void> {
+  if (!currentProfileId)
+    throw new Error("Reopen your local profile before resetting it.");
+  await invoke<void>("reset_profile", {
+    profileId: currentProfileId,
+    confirmation,
+  });
+  currentProfileId = null;
+}

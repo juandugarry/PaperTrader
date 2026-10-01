@@ -20,6 +20,8 @@ const security = {
 function fresh(): Snapshot {
   return {
     displayName: "Alex",
+    profileId: "test-profile",
+    notes: [],
     currency: "AUD",
     primaryMarket: "ASX",
     defaultBrokerageMicros: 3_000_000,

@@ -2,6 +2,14 @@
 
 A local-first desktop workspace for learning ASX paper trading with fictional money. Built with Tauri 2, React, TypeScript and SQLite. No server, cloud account, market-data provider, AI integration or real brokerage connection.
 
+## Current release · 0.3.1
+
+- **Settings → Reset profile:** type `RESET` to permanently clear the profile, portfolio, fills, journal, securities, prices and notes, then return to fresh setup. This cannot be undone.
+- **Journal → Notepad:** create, search, edit and delete local notes. Save explicitly; unsaved drafts are protected when switching pages or notes. Save before closing the app.
+- Existing profiles upgrade without losing progress. Reset occurs only after explicit confirmation.
+
+Automatic ASX refresh and historical charts remain pending provider selection and licensing verification; see [Phase 4 research status](docs/market-data.md).
+
 ## Phase 3 · linked trading journal
 
 - Capture buy thesis, entry trigger, target, stop/invalidation, planned risk and notes alongside a simulated fill, or complete them later.
@@ -33,7 +41,7 @@ cd PaperTrader
 ./Install\ PaperTrader.command
 ```
 
-A successful GitHub Actions build is required before a downloadable artifact exists. Phase 3 macOS packaging has not been verified on this Linux machine. The earlier Phase 1 build was opened successfully on the user’s Mac.
+A successful GitHub Actions build is required before a downloadable artifact exists. This release’s macOS packaging cannot be verified on this Linux machine. The user has successfully opened the earlier Phase 3 build on their Mac.
 
 ## Develop on macOS
 

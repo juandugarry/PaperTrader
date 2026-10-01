@@ -103,6 +103,8 @@ function fixture(): Snapshot {
   };
   return {
     displayName: "Alex",
+    profileId: "test-profile",
+    notes: [],
     defaultBrokerageMicros: 3_000_000,
     currency: "AUD",
     primaryMarket: "ASX",

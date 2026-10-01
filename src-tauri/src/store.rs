@@ -1,5 +1,6 @@
 use crate::domain::validate_setup;
 use crate::journal::{self, JournalTrade, SaveJournal};
+use crate::notes::{self, DeleteNote, Note, SaveNote};
 use crate::trading::{self, CreateSecurity, ExecuteTrade, SetPrice, TradingSnapshot};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ pub struct CreateProfile {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub display_name: String,
+    pub profile_id: String,
+    pub notes: Vec<Note>,
     pub default_brokerage_micros: i64,
     pub currency: String,
     pub primary_market: String,
@@ -24,6 +27,14 @@ pub struct Snapshot {
     pub created_at: String,
     pub trading: TradingSnapshot,
     pub journal: Vec<JournalTrade>,
+}
+pub enum ProfileAction {
+    CreateSecurity(CreateSecurity),
+    SetPrice(SetPrice),
+    ExecuteTrade(ExecuteTrade),
+    SaveJournal(SaveJournal),
+    SaveNote(SaveNote),
+    DeleteNote(DeleteNote),
 }
 pub struct Store {
     connection: Connection,
@@ -42,7 +53,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 3 {
+        if version > 4 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -69,6 +80,14 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
+        if version < 4 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/004_notes_and_reset.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 4)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
         Ok(Self { connection })
     }
     pub fn snapshot(&self) -> Result<Option<Snapshot>, String> {
@@ -80,9 +99,9 @@ impl Store {
         let metadata=tx.query_row(
             "SELECT s.display_name,s.default_brokerage_micros,s.currency,s.primary_market,
             (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1 AND kind='opening_capital'),
-            (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1),p.created_at
+            (SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1),p.created_at,s.profile_id
             FROM settings s JOIN portfolios p ON p.id=s.id WHERE s.id=1", [],
-            |r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?))
+            |r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))
         ).optional().map_err(|e|e.to_string())?;
         let Some((
             display_name,
@@ -92,14 +111,18 @@ impl Store {
             starting_capital_micros,
             cash_micros,
             created_at,
+            profile_id,
         )) = metadata
         else {
             return Ok(None);
         };
         let trading = trading::read(&tx, cash_micros, starting_capital_micros)?;
         let journal = journal::read(&tx)?;
+        let notes = notes::read(&tx)?;
         Ok(Some(Snapshot {
             display_name,
+            profile_id,
+            notes,
             default_brokerage_micros,
             currency,
             primary_market,
@@ -114,6 +137,13 @@ impl Store {
         &mut self,
         action: impl FnOnce(&Connection) -> Result<(), String>,
     ) -> Result<Snapshot, String> {
+        self.mutate_profile(None, action)
+    }
+    fn mutate_profile(
+        &mut self,
+        profile_id: Option<&str>,
+        action: impl FnOnce(&Connection) -> Result<(), String>,
+    ) -> Result<Snapshot, String> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -125,6 +155,9 @@ impl Store {
             .map_err(|e| e.to_string())?
         {
             return Err("Create your local profile first.".into());
+        }
+        if let Some(expected) = profile_id {
+            Self::check_profile(&tx, expected)?;
         }
         action(&tx)?;
         let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
@@ -147,6 +180,59 @@ impl Store {
     pub fn save_journal(&mut self, input: SaveJournal) -> Result<Snapshot, String> {
         self.mutate(|c| journal::save(c, input))
     }
+
+    fn check_profile(c: &Connection, expected: &str) -> Result<(), String> {
+        let actual = c
+            .query_row("SELECT profile_id FROM settings WHERE id=1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if actual.as_deref() != Some(expected) {
+            return Err(
+                "The profile was reset or changed. Reopen the app before continuing.".into(),
+            );
+        }
+        Ok(())
+    }
+    pub fn apply_profile_action(
+        &mut self,
+        profile_id: &str,
+        action: ProfileAction,
+    ) -> Result<Snapshot, String> {
+        self.mutate_profile(Some(profile_id), |c| match action {
+            ProfileAction::CreateSecurity(input) => trading::create_security(c, input),
+            ProfileAction::SetPrice(input) => trading::set_price(c, input),
+            ProfileAction::ExecuteTrade(input) => trading::execute(c, input),
+            ProfileAction::SaveJournal(input) => journal::save(c, input),
+            ProfileAction::SaveNote(input) => notes::save(c, input),
+            ProfileAction::DeleteNote(input) => notes::delete(c, input),
+        })
+    }
+    pub fn reset_profile(&mut self, profile_id: &str, confirmation: &str) -> Result<(), String> {
+        if confirmation != "RESET" {
+            return Err("Type RESET to confirm permanently clearing all local progress.".into());
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        // Explicit whole-profile reset only. Ordinary fill and journal edits retain their immutability triggers.
+        tx.execute_batch("DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/001_foundation.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/003_trading_journal.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/004_notes_and_reset.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.pragma_update(None, "user_version", 4)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
     pub fn create_profile(&mut self, input: CreateProfile) -> Result<Snapshot, String> {
         validate_setup(
             &input.display_name,
@@ -160,7 +246,7 @@ impl Store {
         if exists {
             return Err("A local portfolio already exists. It cannot be overwritten.".into());
         }
-        tx.execute("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market) VALUES(1,?1,?2,'AUD','ASX')",params![input.display_name.trim(),input.default_brokerage_micros]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO settings(id,display_name,default_brokerage_micros,currency,primary_market,profile_id) VALUES(1,?1,?2,'AUD','ASX',lower(hex(randomblob(16))))",params![input.display_name.trim(),input.default_brokerage_micros]).map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO portfolios(id,name) VALUES(1,'My ASX portfolio')",
             [],
@@ -253,7 +339,7 @@ mod tests {
     #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 4).unwrap();
+        c.pragma_update(None, "user_version", 5).unwrap();
         assert!(Store::from_connection(c).is_err());
     }
     fn prepared() -> Store {
@@ -811,6 +897,202 @@ mod tests {
                 ..Default::default()
             });
             assert!(db.execute_trade(conflict).is_err());
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    fn profile(db: &Store) -> String {
+        db.snapshot().unwrap().unwrap().profile_id
+    }
+    fn new_note(title: &str, body: &str) -> SaveNote {
+        SaveNote {
+            id: None,
+            expected_version: None,
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+    #[test]
+    fn notes_create_edit_searchable_text_versions_and_delete_without_financial_changes() {
+        let mut db = prepared();
+        let id = profile(&db);
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::SaveNote(new_note(" Watchlist ", "ASX ideas\nKeep notes local")),
+            )
+            .unwrap();
+        assert_eq!(s.notes[0].title, "Watchlist");
+        assert_eq!(s.notes[0].version, 1);
+        assert_eq!(s.cash_micros, 1_000_000_000);
+        let note_id = s.notes[0].id;
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::SaveNote(SaveNote {
+                    id: Some(note_id),
+                    expected_version: Some(1),
+                    title: "Watchlist".into(),
+                    body: "Updated notes".into(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(s.notes[0].version, 2);
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::SaveNote(SaveNote {
+                    id: Some(note_id),
+                    expected_version: Some(1),
+                    title: "Stale".into(),
+                    body: "Old draft".into()
+                })
+            )
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::DeleteNote(DeleteNote {
+                    id: note_id,
+                    expected_version: 1
+                })
+            )
+            .is_err());
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::DeleteNote(DeleteNote {
+                    id: note_id,
+                    expected_version: 2,
+                }),
+            )
+            .unwrap();
+        assert!(s.notes.is_empty());
+        assert!(s.trading.executions.is_empty());
+    }
+    #[test]
+    fn notes_validate_content_and_persist_after_restart() {
+        let path = database_path("notes");
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            let id = profile(&db);
+            assert!(db
+                .apply_profile_action(&id, ProfileAction::SaveNote(new_note(" ", "blank title")))
+                .is_err());
+            assert!(db
+                .apply_profile_action(
+                    &id,
+                    ProfileAction::SaveNote(new_note("Valid", &"x".repeat(50001)))
+                )
+                .is_err());
+            db.apply_profile_action(
+                &id,
+                ProfileAction::SaveNote(new_note("My research", "A question to revisit")),
+            )
+            .unwrap();
+        }
+        {
+            let db = Store::open(&path).unwrap();
+            let s = db.snapshot().unwrap().unwrap();
+            assert_eq!(s.notes.len(), 1);
+            assert_eq!(s.notes[0].body, "A question to revisit");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn reset_requires_exact_confirmation_clears_all_progress_and_recreates_fresh_profile() {
+        use crate::engine::Side::*;
+        let mut db = prepared();
+        let old = profile(&db);
+        db.execute_trade(fill(1, BUY, 24, 10_115_000, 3_000_000))
+            .unwrap();
+        db.save_journal(SaveJournal {
+            execution_id: 1,
+            expected_version: 1,
+            content: entry_plan(),
+        })
+        .unwrap();
+        db.apply_profile_action(
+            &old,
+            ProfileAction::SaveNote(new_note("Learning", "Keep a plan")),
+        )
+        .unwrap();
+        assert!(db.reset_profile(&old, "reset").is_err());
+        assert!(db.reset_profile("wrong-profile", "RESET").is_err());
+        assert_eq!(db.snapshot().unwrap().unwrap().cash_micros, 754_240_000);
+        db.reset_profile(&old, "RESET").unwrap();
+        assert!(db.snapshot().unwrap().is_none());
+        for table in [
+            "settings",
+            "portfolios",
+            "cash_ledger",
+            "securities",
+            "executions",
+            "journal_entries",
+            "journal_revisions",
+            "notes",
+        ] {
+            let count: i64 = db
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+        let mut fresh = input();
+        fresh.display_name = "Fresh trader".into();
+        fresh.starting_capital_micros = 5_000_000_000;
+        let s = db.create_profile(fresh).unwrap();
+        assert_ne!(s.profile_id, old);
+        assert_eq!(s.cash_micros, 5_000_000_000);
+        assert!(s.notes.is_empty());
+        assert!(s.journal.is_empty());
+        assert!(s.trading.securities.is_empty());
+        db.create_security(CreateSecurity {
+            ticker: "BEN".into(),
+            name: "Bank".into(),
+        })
+        .unwrap();
+        assert!(db
+            .apply_profile_action(
+                &old,
+                ProfileAction::ExecuteTrade(fill(2, BUY, 1, 10_000_000, 0))
+            )
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                &old,
+                ProfileAction::SaveNote(new_note("Stale", "Cannot cross resets"))
+            )
+            .is_err());
+        let new = profile(&db);
+        db.apply_profile_action(
+            &new,
+            ProfileAction::ExecuteTrade(fill(3, BUY, 1, 10_000_000, 0)),
+        )
+        .unwrap();
+        assert!(db.connection.execute("DELETE FROM executions", []).is_err());
+        assert!(db
+            .connection
+            .execute("DELETE FROM cash_ledger", [])
+            .is_err());
+    }
+    #[test]
+    fn reset_is_persistent_across_restart() {
+        let path = database_path("reset");
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            let id = profile(&db);
+            db.apply_profile_action(&id, ProfileAction::SaveNote(new_note("Old", "Progress")))
+                .unwrap();
+            db.reset_profile(&id, "RESET").unwrap();
+        }
+        {
+            let mut db = Store::open(&path).unwrap();
+            assert!(db.snapshot().unwrap().is_none());
+            let s = db.create_profile(input()).unwrap();
+            assert_eq!(s.cash_micros, 1_000_000_000);
+            assert!(s.notes.is_empty());
         }
         std::fs::remove_file(path).unwrap();
     }

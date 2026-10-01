@@ -1,3 +1,5 @@
+import Notepad from "./components/Notepad";
+import ProfileReset from "./components/ProfileReset";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   createProfile,
@@ -43,6 +45,21 @@ export default function App() {
   const [error, setError] = useState("");
   const [page, setPage] = useState<Page>("Trade");
   const [lesson, setLesson] = useState(0);
+  const [journalArea, setJournalArea] = useState<"trades" | "notes">("trades");
+  const [notepadDirty, setNotepadDirty] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<{
+    page: Page;
+    area: "trades" | "notes";
+  } | null>(null);
+  function navigate(nextPage: Page, area = journalArea) {
+    if (notepadDirty && (nextPage !== "Journal" || area !== "notes")) {
+      setPendingNavigation({ page: nextPage, area });
+      return;
+    }
+    setPendingNavigation(null);
+    setPage(nextPage);
+    setJournalArea(area);
+  }
   async function load() {
     setLoading(true);
     setError("");
@@ -95,7 +112,7 @@ export default function App() {
     );
   if (!snapshot) return <Onboarding onCreated={setSnapshot} />;
   return (
-    <div className="shell">
+    <div className="shell" key={snapshot.profileId}>
       <aside>
         <Brand />
         <div className="workspace-label">YOUR WORKSPACE</div>
@@ -105,7 +122,7 @@ export default function App() {
               key={tab}
               className={page === tab ? "nav active" : "nav"}
               aria-current={page === tab ? "page" : undefined}
-              onClick={() => setPage(tab)}
+              onClick={() => navigate(tab)}
             >
               <span aria-hidden="true">{["◫", "▤", "◇"][i]}</span>
               {tab}
@@ -115,7 +132,7 @@ export default function App() {
         <div className="sidebar-bottom">
           <button
             className={page === "Settings" ? "nav active" : "nav"}
-            onClick={() => setPage("Settings")}
+            onClick={() => navigate("Settings")}
           >
             ⚙ Settings
           </button>
@@ -160,11 +177,66 @@ export default function App() {
           </div>
           <span className="phase">PHASE 3</span>
         </div>
+        {pendingNavigation && (
+          <div className="unsaved-confirm">
+            <p>
+              Your note has unsaved changes. Save it first, or discard them
+              before leaving.
+            </p>
+            <button
+              className="danger-outline"
+              onClick={() => {
+                setPage(pendingNavigation.page);
+                setJournalArea(pendingNavigation.area);
+                setNotepadDirty(false);
+                setPendingNavigation(null);
+              }}
+            >
+              Discard note changes and continue
+            </button>
+            <button
+              className="secondary"
+              onClick={() => setPendingNavigation(null)}
+            >
+              Stay in notepad
+            </button>
+          </div>
+        )}
         {page === "Trade" && (
           <TradingWorkspace snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Journal" && (
-          <JournalWorkspace snapshot={snapshot} onChanged={setSnapshot} />
+          <>
+            <div
+              className="journal-subnav"
+              role="group"
+              aria-label="Journal area"
+            >
+              <button
+                aria-pressed={journalArea === "trades"}
+                className={journalArea === "trades" ? "selected" : ""}
+                onClick={() => navigate("Journal", "trades")}
+              >
+                Trading journal
+              </button>
+              <button
+                aria-pressed={journalArea === "notes"}
+                className={journalArea === "notes" ? "selected" : ""}
+                onClick={() => navigate("Journal", "notes")}
+              >
+                Notepad
+              </button>
+            </div>
+            {journalArea === "trades" ? (
+              <JournalWorkspace snapshot={snapshot} onChanged={setSnapshot} />
+            ) : (
+              <Notepad
+                snapshot={snapshot}
+                onChanged={setSnapshot}
+                onDirtyChange={setNotepadDirty}
+              />
+            )}
+          </>
         )}
         {page === "Learn" && (
           <div className="learn-layout">
@@ -220,9 +292,16 @@ export default function App() {
             </dl>
             <p className="muted">
               Profile settings are read-only. Brokerage can be overridden on
-              each fill. Backup, restore and reset will be added in a later
-              phase.
+              each fill. Backup and restore will be added later.
             </p>
+            <ProfileReset
+              onReset={() => {
+                setSnapshot(null);
+                setPage("Trade");
+                setJournalArea("trades");
+                setError("");
+              }}
+            />
           </section>
         )}
         <footer>

@@ -1,4 +1,4 @@
-# Phase 3 architecture
+# PaperTrader architecture
 
 ## Structure
 
@@ -65,7 +65,7 @@ Each reviewed fill has a request ID. Retrying an identical request returns the e
 
 The database-level BEN acceptance test creates a disposable $1,000 portfolio, buys 24 BEN at $10.115 with $3 brokerage, and checks exactly $754.24 cash. It then marks, partially sells and closes the position, checking cash/P&L reconciliation. Other tests cover multiple buys, cost-allocation remainder, overselling, insufficient cash, invalid/overflow input, rollback, duplicate retries, immutable fills, migration, prices and restart persistence. Test data is not installed into the application.
 
-Phase 4 will investigate licensed ASX data retrieval before selecting a provider. Pending orders, charts, analytics, AI, backup/import/reset and signed distribution remain deferred. Brokerage is adjustable on each fill.
+Phase 4 will investigate licensed ASX data retrieval before selecting a provider. Pending orders, charts, analytics, AI, backup/import and signed distribution remain deferred. Brokerage is adjustable on each fill.
 
 ## Schema version 3 and journal behaviour
 
@@ -88,3 +88,13 @@ The journal reuses the accounting engine twice: with actual brokerage for net re
 Dates, prices, quantity, brokerage and outcomes come from executions and are never commentary fields. The original opening plan is retained in the first BUY's revision history; the Trade position view displays its latest commentary target/invalidation and offers its full latest plan. Targets and stops do not submit orders or change fill logic. Manual reference prices and their timestamps remain independent.
 
 UI interaction tests mock IPC explicitly. Rust tests exercise SQLite linking, revisions, optimistic conflicts, rollback, Phase 2 migration, partial/full exit costs, additional buys/rebuys, original-plan retention and restart persistence. macOS-native build validation still belongs to GitHub Actions and a Mac; Linux headless tests do not establish desktop readiness.
+
+## Schema version 4: notepad and explicit reset
+
+Migration 004 adds independent mutable `notes` and a random profile generation identifier. Notes store title, body, version and UTC creation/update times. Titles are trimmed and limited to 120 characters; bodies to 50,000. Edits and deletes require the displayed version, preventing silent overwrite by another window. Notes never change accounting or journal history.
+
+All desktop profile mutations include the generation identifier and check it inside the same IMMEDIATE transaction as the write. After a reset, stale windows are rejected even if a new profile reuses numeric record IDs.
+
+Reset requires the exact confirmation `RESET` and the current generation. It atomically drops and recreates the simulation tables using the released migrations, then returns to onboarding. This explicit whole-profile operation is the only exception to immutable financial and journal records; individual fills and revisions remain immutable. Notes are also deleted. A new profile receives a different generation identifier. Cancellation or an invalid confirmation preserves all data. Reset offers no undo or backup.
+
+The notepad uses explicit saves and guards unsaved drafts when navigating within the app. Drafts are not persisted until saved; users should save before closing the native window. Tests cover note persistence/conflicts, complete reset, restart, stale-window rejection and restored immutability triggers.

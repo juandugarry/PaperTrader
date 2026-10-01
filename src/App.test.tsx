@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
-import { createProfile, getSnapshot, type Snapshot } from "./api";
+import { createProfile, getSnapshot, resetProfile, type Snapshot } from "./api";
 vi.mock("./api", () => ({
   desktopAvailable: true,
   getSnapshot: vi.fn(),
   createProfile: vi.fn(),
+  resetProfile: vi.fn(),
+  saveNote: vi.fn(),
+  deleteNote: vi.fn(),
   saveJournal: vi.fn(),
   createSecurity: vi.fn(),
   setPrice: vi.fn(),
@@ -15,6 +18,8 @@ vi.mock("./api", () => ({
 }));
 const portfolio: Snapshot = {
   displayName: "Alex",
+  profileId: "test-profile",
+  notes: [],
   defaultBrokerageMicros: 3_000_000,
   currency: "AUD",
   primaryMarket: "ASX",
@@ -122,5 +127,45 @@ describe("Profile and navigation through the IPC boundary", () => {
         screen.getByRole("heading", { name: "Your portfolio" }),
       ).toBeTruthy(),
     );
+  });
+  it("returns to first-launch setup after an explicitly confirmed profile reset", async () => {
+    vi.mocked(getSnapshot).mockResolvedValue(portfolio);
+    vi.mocked(resetProfile).mockResolvedValue();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Your portfolio" });
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+    await user.click(screen.getByRole("button", { name: "Reset profile…" }));
+    await user.type(screen.getByLabelText("Type RESET to confirm"), "RESET");
+    await user.click(
+      screen.getByRole("button", { name: "Permanently reset profile" }),
+    );
+    await screen.findByLabelText("Trader name");
+    expect(resetProfile).toHaveBeenCalledWith("RESET");
+  });
+  it("keeps an unsaved notepad draft when changing the main page until it is discarded", async () => {
+    vi.mocked(getSnapshot).mockResolvedValue(portfolio);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Your portfolio" });
+    await user.click(screen.getByRole("button", { name: /Journal/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Notepad" }),
+    );
+    await user.click(screen.getByRole("button", { name: "New note" }));
+    await user.type(screen.getByLabelText("Note title"), "Unsaved question");
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+    expect(
+      (screen.getByLabelText("Note title") as HTMLInputElement).value,
+    ).toBe("Unsaved question");
+    await user.click(screen.getByRole("button", { name: "Stay in notepad" }));
+    expect(screen.getByRole("heading", { name: "Your notepad" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+    await user.click(
+      screen.getByRole("button", { name: "Discard note changes and continue" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Your local workspace" }),
+    ).toBeTruthy();
   });
 });

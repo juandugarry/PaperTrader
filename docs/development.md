@@ -25,7 +25,7 @@ For a real desktop smoke test: run `npm run desktop`, create an Alex profile wit
 
 On a disposable simulation, add BEN and its full security name, buy 24 at 10.115 with 3.00 brokerage, and verify the review shows 245.76 outlay and 754.24 remaining cash. Confirm once; there must be one immutable fill. Set a manual current price of 10.60 and verify the timestamp, 254.40 position value, 8.64 unrealised P&L, and 1008.64 portfolio value. Sell 12 at 10.60 with 3.00 brokerage; verify 878.44 cash, 12 shares and 1.32 realised P&L. Close the remaining 12 at 9.95 with 3.00 brokerage; verify 994.84 cash, no open position and −5.16 realised P&L. Restart to verify persistence. Also test a rejected oversized buy and an oversell without any new history entries. These numbers are test fixtures, not seeded user data.
 
-Phase 3's web build, Rust/SQLite tests and Chromium checks can run here. The GitHub Actions workflow builds the universal macOS app; its remote result cannot be queried from this machine because GitHub API access is denied. Phase 1 was opened successfully on the user's Mac; the new Phase 3 native build still needs validation there.
+Phase 3's web build, Rust/SQLite tests and Chromium checks can run here. The GitHub Actions workflow builds the universal macOS app; its remote result cannot be queried from this machine because GitHub API access is denied. The user has opened Phase 3 successfully on their Mac; release 0.3.1 still needs native validation.
 
 ## Phase 3 journal smoke test
 
@@ -34,3 +34,11 @@ Use a disposable simulation, not a tester's existing portfolio. Before the BEN b
 Record the 12-share partial sell above with an exit reason and plan-adherence answer. In Journal verify the same open lifecycle with two fills, 5.82 gross realised P&L, 4.50 realised transaction costs and 1.32 net realised P&L. Complete the remaining exit and review fields; the lifecycle closes with 3.84 gross P&L, 9.00 costs, −5.16 net P&L and approximately −2.10% return. A later BUY must start a separate lifecycle. Restart to verify commentary and versions persist.
 
 For an existing Phase 2 database, verify every legacy fill has an empty journal marked added after the fill, without changes to balances/history. In two app windows, editing an already-changed revision must be rejected with Reload latest journal. No market data or AI is used.
+
+## Reset and notepad smoke test (0.3.1)
+
+Use a disposable profile. In Journal → Notepad create a titled note, save it, search it, edit it and restart to verify persistence. Make unsaved changes and switch notes or pages; confirm the draft remains until explicitly discarded. Delete a note only after confirmation. Save before closing the app.
+
+In Settings open Reset profile, cancel once and verify data remains. Open it again, type RESET and confirm. Verify onboarding returns; restart must still show onboarding. Create a fresh profile and verify only the chosen opening capital exists, with no old securities, prices, executions, journal entries or notes. An old second window must reject writes after reset; reopen it to load the fresh profile. Never perform this test against a portfolio you want to keep.
+
+Provider research is currently network-blocked; see [research status and required domains](market-data.md).
