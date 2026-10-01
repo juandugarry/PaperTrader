@@ -1,0 +1,34 @@
+name: Phase 1 checks
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --no-default-features -- -D warnings
+      - name: Install Apple Silicon and Intel targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build universal macOS application (unsigned)
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app
+      - name: Zip application preserving the macOS bundle
+        run: ditto -c -k --sequesterRsrc --keepParent src-tauri/target/universal-apple-darwin/release/bundle/macos/PaperTrader.app PaperTrader-macOS.zip
+      - name: Upload downloadable macOS application
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperTrader-macOS
+          path: PaperTrader-macOS.zip
+          if-no-files-found: error
+

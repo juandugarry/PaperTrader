@@ -1,0 +1,26 @@
+[package]
+name = "papertrader"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+
+[lib]
+name = "papertrader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true, features = [] }
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", optional = true, features = [] }
+
+[[bin]]
+name = "papertrader"
+path = "src/main.rs"
+required-features = ["desktop"]
