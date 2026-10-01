@@ -35,7 +35,7 @@ Historical API documentation distinguishes raw OHLC from adjusted close. Use una
 
 ## Implemented behaviour (0.4.0)
 
-Rust requests `https://eodhd.com/api/eod/TICKER.AU` with a daily, ascending range covering the last 365 days. The user's API key is stored through macOS Keychain, scoped to the profile generation. IPC reports key presence only; it never returns the stored key. Saving a key does not verify entitlement or spend a request. The first explicit refresh validates actual access through the provider response. Signup opens the fixed official registration URL in the Mac's browser.
+Rust requests `https://eodhd.com/api/eod/TICKER.AU` with a daily, ascending range covering the last 365 days. The user's API key is saved locally in `eodhd-api-key.txt` alongside the SQLite database (0.4.2), with profile checks guarding access. IPC reports key presence only; it never returns the stored key. Saving a key does not verify entitlement or spend a request. The first explicit refresh validates actual access through the provider response. Signup opens the fixed official registration URL in the Mac's browser.
 
 No scheduled polling occurs. Each batch reserves one slot per unique selected security before networking, subject to a 20-slot local UTC-day cap and one-minute cooldown. Reservations survive early aborts, failed responses, restarts and profile reset. This conservative counter cannot account for requests made in other apps. A batch has at most 20 securities; concurrent batches are rejected, with a ten-minute recovery lease after a crash. Network timeouts are bounded to 20 seconds per attempted symbol. Authentication, rate-limit and network/service failures stop further requests in that batch; per-symbol entitlement or ticker failures allow the remaining symbols to continue.
 
@@ -43,13 +43,13 @@ Network work runs outside the database mutex. Completion checks profile generati
 
 Prices are parsed from JSON decimals directly into integer micro-AUD, rounding extra precision half up. Malformed, duplicate, empty, oversized, future or out-of-range history is rejected. The latest unadjusted close updates valuation; chart adjustment is optional and explicitly labelled. Full cached history is replaced on successful refresh, so adjusted historical revisions are not patched onto stale data. Provider prices never alter executions or commentary. Cached values show their session date and retrieval time and do not claim to be current intraday prices.
 
-Migration 005 preserves existing profiles and manual reference prices. Reset removes prices, charts and the profile's Keychain credential; only anonymous UTC-day request counts remain to protect the allowance. Removing a key alone retains cached prices.
+Migration 005 preserves existing profiles and manual reference prices. Reset removes prices, charts and the local API key file; only anonymous UTC-day request counts remain to protect the allowance. Removing a key alone retains cached prices.
 
 ## Validation limits
 
 Cloud tests cover exact parsing, malformed responses, partial failures, valuation rollback, quota/cooldown/concurrency, v4 migration, restart persistence, reset during refresh and concurrent manual-price changes. Frontend tests mock IPC for key setup/removal, refresh outcomes, cached charts, allowance and adjusted-series interaction. A real HTTPS smoke using EODHD's documented public AAPL demo returned 251 daily rows; it verifies provider transport and parsing, not ASX entitlement. That optional network test is ignored in the normal offline test suite and was run explicitly.
 
-No user's key is configured in this cloud environment. A private ASX request, macOS Keychain prompts and native desktop IPC still require validation on the user's Mac. The universal macOS build runs in GitHub Actions; its result cannot be queried here because GitHub API access remains forbidden. No paid subscription or provider dataset is bundled.
+No user's key is configured in this cloud environment. A private ASX request, local key-file behaviour and native desktop IPC still require validation on the user's Mac. The universal macOS build runs in GitHub Actions; public run/job HTML can be checked here while GitHub API access remains forbidden. No paid subscription or provider dataset is bundled.
 
 ## Next-build note
 
@@ -57,7 +57,7 @@ The user suggested limiting refreshes to about three. Each installation uses its
 
 ## ASX directory (0.4.1)
 
-The Stocks tab uses `GET /api/exchange-symbol-list/AU?fmt=json&delisted=0` with the profile’s Keychain key. EODHD documents exchange symbol lists as available across plans and costing one API call. The response supplies Code, Name, Type and Currency, without requesting prices. See [exchange symbols documentation](https://eodhd.com/financial-apis/exchanges-api-list-of-tickers-and-trading-hours).
+The Stocks tab uses `GET /api/exchange-symbol-list/AU?fmt=json&delisted=0` with the locally saved key. EODHD documents exchange symbol lists as available across plans and costing one API call. The response supplies Code, Name, Type and Currency, without requesting prices. See [exchange symbols documentation](https://eodhd.com/financial-apis/exchanges-api-list-of-tickers-and-trading-hours).
 
 SQLite migration 006 caches the directory separately from financial snapshots. Requests share the price refresh reservation, UTC quota and lease; profile generation and job ID guard results after reset or overlapping windows. Failed transport/validation leaves the old cache intact and the reserved request counted. Search, type filters, pagination and adding a ticker are local. Browse-only rows show securities outside the current AUD/ticker support. No provider catalog is bundled or redistributed.
 
@@ -67,4 +67,6 @@ Cloud validation covers response parsing, offline persistence, shared request ac
 
 Migration 007 stores nullable, exact integer micro-AUD open/high/low values beside existing closes. Missing legacy OHLC leaves candles unavailable until refresh, without inventing wicks. EODHD’s same daily history response supplies all four prices; malformed or inconsistent ranges preserve prior cached history. Candles are unadjusted, with daily session highs/lows and open/close bodies. Line-chart adjustment remains explicit.
 
-Windows uses keyring’s `windows-native` backend and Windows Credential Manager; macOS retains its `apple-native` Keychain backend. Neither stores keys in SQLite or frontend persistence. CI creates an unsigned x64 NSIS setup EXE in the PaperTrader-Windows artifact alongside the universal macOS ZIP. Installation/credential prompts on a real Windows desktop still require a local smoke test.
+Both platforms now use a local plaintext key file, explicitly requested by the user to eliminate OS credential prompts. Unix creation permissions are 0600; Windows inherits the app-data directory's access permissions. Writes use a temporary file and atomic replacement. Status checks inspect only file presence and do not read the key; Trade performs no credential check while browsing. Saving/removing/resetting are guarded by profile generation and the database mutex. The key is read only for an explicit market-data request and is never returned to the frontend. Old system credentials are never accessed or migrated: re-enter the key once after updating. This changes the former secure-store design at the user's request.
+
+CI creates an unsigned x64 NSIS setup EXE in PaperTrader-Windows alongside the universal macOS ZIP. Installation on a real desktop still needs a local smoke test.

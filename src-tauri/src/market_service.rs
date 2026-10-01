@@ -15,13 +15,9 @@ pub fn market_key_status(store: &Mutex<Store>, profile_id: String) -> Result<Key
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
     Ok(KeyStatus {
-        configured: credentials::load(&profile_id)?.is_some(),
-        supported: cfg!(any(target_os = "macos", target_os = "windows")),
-        storage: if cfg!(target_os = "windows") {
-            "Windows Credential Manager"
-        } else {
-            "macOS Keychain"
-        },
+        configured: credentials::configured(db.credential_path()?)?,
+        supported: true,
+        storage: "Local file on this device",
     })
 }
 pub fn save_market_key(
@@ -32,12 +28,12 @@ pub fn save_market_key(
     let key = market::validate_key(&key)?;
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
-    credentials::save(&profile_id, key)
+    credentials::save(db.credential_path()?, key)
 }
 pub fn remove_market_key(store: &Mutex<Store>, profile_id: String) -> Result<(), String> {
     let db = store.lock().map_err(|_| "Database lock unavailable")?;
     db.verify_profile(&profile_id)?;
-    credentials::remove(&profile_id)
+    credentials::remove(db.credential_path()?)
 }
 pub fn refresh_market_prices(
     store: &Mutex<Store>,
@@ -47,8 +43,8 @@ pub fn refresh_market_prices(
     let (job, key) = {
         let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
         db.verify_profile(&profile_id)?;
-        let key =
-            credentials::load(&profile_id)?.ok_or("Add your EODHD API key in Settings first.")?;
+        let key = credentials::load(db.credential_path()?)?
+            .ok_or("Add your EODHD API key in Settings first.")?;
         market::validate_key(&key)?;
         (db.begin_refresh(&profile_id, security_ids)?, key)
     };
@@ -89,7 +85,7 @@ pub fn reset_profile(
     if confirmation != "RESET" {
         return Err("Type RESET to confirm permanently clearing all local progress.".into());
     }
-    credentials::remove(&profile_id)?;
+    credentials::remove(db.credential_path()?)?;
     db.reset_profile(&profile_id, &confirmation)
 }
 
@@ -129,8 +125,8 @@ pub fn refresh_asx_directory(
     let (job, key) = {
         let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
         db.verify_profile(&profile_id)?;
-        let key =
-            credentials::load(&profile_id)?.ok_or("Add your EODHD API key in Settings first.")?;
+        let key = credentials::load(db.credential_path()?)?
+            .ok_or("Add your EODHD API key in Settings first.")?;
         market::validate_key(&key)?;
         (db.begin_directory(&profile_id)?, key)
     };
@@ -139,4 +135,50 @@ pub fn refresh_asx_directory(
         .lock()
         .map_err(|_| "Database lock unavailable")?
         .finish_directory(&profile_id, &job, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn key_status_does_not_read_key_contents_and_reset_removes_local_file() {
+        let directory =
+            std::env::temp_dir().join(format!("papertrader-key-service-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db = Mutex::new(Store::open(directory.join("portfolio.sqlite3")).unwrap());
+        let id = db
+            .lock()
+            .unwrap()
+            .create_profile(crate::store::CreateProfile {
+                display_name: "Test".into(),
+                starting_capital_micros: 1_000_000_000,
+                default_brokerage_micros: 3_000_000,
+            })
+            .unwrap()
+            .profile_id;
+        assert!(!market_key_status(&db, id.clone()).unwrap().configured);
+        save_market_key(&db, id.clone(), "example_key_123".into()).unwrap();
+        let path = db.lock().unwrap().credential_path().unwrap().to_path_buf();
+        std::fs::write(&path, "invalid?key").unwrap();
+        assert!(market_key_status(&db, id.clone()).unwrap().configured);
+        assert!(refresh_market_prices(&db, id.clone(), vec![1]).is_err());
+        assert_eq!(
+            db.lock()
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .unwrap()
+                .market
+                .requests_today,
+            0
+        );
+        save_market_key(&db, id.clone(), "example_key_123".into()).unwrap();
+        assert!(
+            save_market_key(&db, "stale-profile".into(), "replacement_key_456".into()).is_err()
+        );
+        reset_profile(&db, id, "RESET".into()).unwrap();
+        assert!(!path.exists());
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

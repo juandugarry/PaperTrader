@@ -13,7 +13,7 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
-  const storage = status?.storage ?? "macOS Keychain";
+  const storage = status?.storage ?? "Local file on this device";
   useEffect(() => {
     let active = true;
     marketKeyStatus()
@@ -90,9 +90,7 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
         access in your account.
       </p>
       {status && !status.supported ? (
-        <p className="notice">
-          Saved API keys require the macOS or Windows app.
-        </p>
+        <p className="notice">Local API key storage is unavailable.</p>
       ) : (
         <>
           <p className="key-status">
@@ -144,9 +142,11 @@ export default function MarketSettings({ market }: { market: MarketSnapshot }) {
         </>
       )}
       <p className="muted">
-        The key is stored in {storage}, never in your portfolio database. Reset
-        removes it along with your profile. Closing prices are reference
-        valuations; refresh never changes your recorded fills.
+        The key is saved in a local file alongside your portfolio database.
+        There are no Keychain or Credential Manager prompts. Software with
+        access to that file can read it. Reset removes it along with your
+        profile. Closing prices are reference valuations; refresh never changes
+        your recorded fills.
       </p>
       {error && (
         <p className="error" role="alert">

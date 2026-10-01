@@ -5,7 +5,7 @@ use crate::notes::{self, DeleteNote, Note, SaveNote};
 use crate::trading::{self, CreateSecurity, ExecuteTrade, SetPrice, TradingSnapshot};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,10 +40,14 @@ pub enum ProfileAction {
 }
 pub struct Store {
     connection: Connection,
+    credential_path: Option<PathBuf>,
 }
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
-        Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)
+        let path = path.as_ref();
+        let mut store = Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)?;
+        store.credential_path = Some(path.with_file_name("eodhd-api-key.txt"));
+        Ok(store)
     }
     fn from_connection(mut connection: Connection) -> Result<Self, String> {
         connection
@@ -114,7 +118,10 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            credential_path: None,
+        })
     }
     pub fn snapshot(&self) -> Result<Option<Snapshot>, String> {
         // Keep metadata, ledger and execution reads in one consistent read transaction.
@@ -310,6 +317,11 @@ impl Store {
             refreshing,
             histories,
         })
+    }
+    pub fn credential_path(&self) -> Result<&Path, String> {
+        self.credential_path
+            .as_deref()
+            .ok_or_else(|| "Local API key storage unavailable.".into())
     }
     pub fn verify_profile(&self, profile_id: &str) -> Result<(), String> {
         Self::check_profile(&self.connection, profile_id)

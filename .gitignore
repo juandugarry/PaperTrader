@@ -4,3 +4,6 @@ src-tauri/target/
 *.log
 .DS_Store
 *.tsbuildinfo
+# Local provider keys must never be committed.
+eodhd-api-key.txt
+eodhd-api-key.tmp-*

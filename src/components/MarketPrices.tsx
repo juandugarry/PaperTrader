@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   getSnapshot,
-  marketKeyStatus,
   refreshMarketPrices,
   type Snapshot,
   type Security,
@@ -34,23 +33,9 @@ export default function MarketPrices({
   security: Security;
   onChanged: (s: Snapshot) => void;
 }) {
-  const [configured, setConfigured] = useState<boolean | null>(null),
-    [busy, setBusy] = useState(false),
+  const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [result, setResult] = useState("");
-  useEffect(() => {
-    let active = true;
-    marketKeyStatus()
-      .then((s) => {
-        if (active) setConfigured(s.configured);
-      })
-      .catch((e) => {
-        if (active) setError(String(e));
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
   async function refresh(ids: number[]) {
     setBusy(true);
     setError("");
@@ -103,16 +88,9 @@ export default function MarketPrices({
         close. {left} local requests left today (UTC). Cached values may be
         older than today.
       </p>
-      {configured === false && (
-        <p className="notice">
-          Add your free EODHD API key in Settings to refresh prices.
-        </p>
-      )}
       <div className="review-actions">
         <button
-          disabled={
-            busy || snapshot.market.refreshing || !configured || left < 1
-          }
+          disabled={busy || snapshot.market.refreshing || left < 1}
           onClick={() => void refresh([security.id])}
         >
           {busy ? "Refreshing…" : `Refresh ${security.ticker} price`}
@@ -122,7 +100,6 @@ export default function MarketPrices({
           disabled={
             busy ||
             snapshot.market.refreshing ||
-            !configured ||
             ids.length > left ||
             ids.length > 20 ||
             ids.length < 2

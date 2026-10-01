@@ -45,7 +45,7 @@ Provider research succeeded; see [provider sources and integration](market-data.
 
 ## Phase 4 smoke test
 
-Use a disposable profile and your own free EODHD key, entered in Settings on the Mac (never chat or a fixture). Verify save, Keychain permission prompt, restart presence and remove. Add a valid ASX ticker, refresh and verify an AUD closing reference price, EODHD source, actual session date and retrieval time. Check one-month/three-month/one-year charts, date exploration and adjusted-series label. Record a manual simulated fill and verify subsequent refresh leaves its price, cash and commentary intact while updating reference valuation.
+Use a disposable profile and your own free EODHD key, entered in Settings on the Mac (never chat or a fixture). Verify save, restart presence and remove without any system credential prompt. Add a valid ASX ticker, refresh and verify an AUD closing reference price, EODHD source, actual session date and retrieval time. Check one-month/three-month/one-year charts, date exploration and adjusted-series label. Record a manual simulated fill and verify subsequent refresh leaves its price, cash and commentary intact while updating reference valuation.
 
 Disconnect networking and refresh: prior data must remain and the error must be visible. Verify an invalid key/unsupported ticker fails without fake quotes. Check the local request counter, one-minute cooldown, and bulk refresh when enough allowance remains. Opening or restarting the app must not fetch data automatically. Reset must return to onboarding and remove the profile credential/cache, while preserving anonymous request counts. Never reset a portfolio you want to keep.
 
@@ -55,29 +55,12 @@ The explicitly invoked public-demo transport check is:
 cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features public_demo_transport_and_history -- --ignored --nocapture
 ```
 
-It uses EODHD's documented public AAPL demo only. It does not test ASX entitlement, Keychain or native IPC. HTTPS uses native trusted roots; never disable certificate verification to repair networking.
+It uses EODHD's documented public AAPL demo only. It does not test ASX entitlement or native IPC. HTTPS uses native trusted roots; never disable certificate verification to repair networking.
 
-## Check Mac-only credential code from Linux
+## Local key-file validation (0.4.2)
 
-Linux headless tests do not compile the macOS Keychain branch. A separate temporary crate can type-check that actual source for Apple Silicon without linking a native app or accessing a Keychain. This check reproduced and verified the fix for the 0.4.0 error-type mismatch. It complements the full Mac CI build.
+Keychain and Credential Manager have been removed. The same credential code compiles in normal headless tests on all platforms. Tests cover presence-only status (without reading key contents), save/replacement/removal, Unix 0600 permissions, invalid-key validation before request reservation, profile guards, and reset deletion. Use only disposable files and dummy keys in tests. Never read or print a real user's key file.
 
-From the repository root with Rust activated:
+On a desktop, save your own key once after updating from 0.4.1. Navigate Trade/Stocks/Settings and restart: there must be no OS credential prompts. Refresh explicitly to validate provider access. Remove the key and confirm cached data remains; refresh should ask for setup through an ordinary application error. Reset clears the local key file. Older OS credential entries are not accessed or migrated.
 
-```sh
-rustup target add aarch64-apple-darwin
-mkdir -p /tmp/papertrader-mac-check
-cat > /tmp/papertrader-mac-check/Cargo.toml <<EOF
-[package]
-name = "papertrader_mac_credentials_check"
-version = "0.1.0"
-edition = "2021"
-[lib]
-path = "$(pwd)/src-tauri/src/credentials.rs"
-[dependencies]
-keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
-EOF
-cargo check --manifest-path /tmp/papertrader-mac-check/Cargo.toml --target aarch64-apple-darwin
-cargo clippy --manifest-path /tmp/papertrader-mac-check/Cargo.toml --locked --target aarch64-apple-darwin -- -D warnings
-```
-
-Keep the temporary crate's keyring version aligned with the application's lockfile when dependencies change. GitHub's API remains blocked in this environment, but the public Actions run/job HTML is accessible for step outcomes; detailed logs require sign-in.
+GitHub's API remains blocked in this environment, but public Actions run/job HTML is accessible for step outcomes; detailed logs require sign-in.

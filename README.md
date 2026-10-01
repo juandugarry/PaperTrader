@@ -2,9 +2,9 @@
 
 A local-first desktop workspace for learning ASX paper trading with fictional money. Built for macOS and Windows with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
 
-## Phase 4 · 0.4.1 · ASX directory, charts and Windows
+## Phase 4 · 0.4.2 · ASX directory, charts and Windows
 
-- **Settings → ASX end-of-day prices:** create a free EODHD account and save its API key in macOS Keychain. No key is stored in SQLite, localStorage or the repository.
+- **Settings → ASX end-of-day prices:** create a free EODHD account and save its API key in a local file beside your portfolio database. No system credential prompts; the key is readable by software with access to that file. It is never returned through IPC or saved in frontend storage.
 - **Trade → select a stock → Refresh price:** fetch its latest published closing price and up to one year of daily history. Refresh all updates your local security list when enough allowance remains.
 - Reference prices show their source, session date and retrieval time. Daily charts offer one-month, three-month and one-year views, date exploration, and explicit split/dividend adjustment.
 - Closing-price refresh changes reference valuations only. Your immutable simulated fills, cash ledger and commentary stay intact. Manual reference prices remain available.
@@ -12,7 +12,11 @@ A local-first desktop workspace for learning ASX paper trading with fictional mo
 
 One stock-history request uses one allowance slot. Reserved slots remain counted if a batch stops early, and the quota counter survives profile reset. EODHD may count usage from other applications too. End-of-day data usually publishes 2–3 hours after market close; it is not an intraday quote. This integration is for private personal use, without shared keys or redistribution of provider data. See [provider terms and implementation](docs/market-data.md).
 
-**First use on your Mac:** download the latest successful Actions artifact, open Settings, create the free provider account, paste your key and allow macOS Keychain access when prompted. Add an ASX ticker such as your chosen stock’s local code (no `.AU` suffix), select it in Trade and refresh. Confirm your key has ASX entitlement; no private ASX key was available for cloud validation.
+**First use on your Mac:** download the latest successful Actions artifact, open Settings, create the free provider account, paste your key. Add an ASX ticker such as your chosen stock’s local code (no `.AU` suffix), select it in Trade and refresh. Confirm your key has ASX entitlement; no private ASX key was available for cloud validation.
+
+## Updating from 0.4.1
+
+Keychain and Windows Credential Manager integration has been removed at the user's request. Save your API key once in Settings after updating; the app never reads the previous system credential, including during startup, navigation or reset. Your portfolio and cached data remain intact. Keys are now saved in `eodhd-api-key.txt` alongside the database, with owner-only permissions on macOS/Linux. They are plaintext and should be excluded from shared backups. Reset and Remove API key delete the local file. Previous OS credential entries are not accessed or automatically migrated.
 
 ## Stocks directory
 
@@ -26,7 +30,7 @@ In Trade, refresh a stock once, then switch its daily chart between **Line** and
 
 ## Windows installer
 
-Download **PaperTrader-Windows** from the latest successful [GitHub Actions run](https://github.com/juandugarry/PaperTrader/actions), extract the artifact ZIP and run `PaperTrader_0.4.1_x64-setup.exe` (the filename may include a language suffix). This is an unsigned Windows x64 installer; Windows may show a publisher warning. It installs the desktop app and uses WebView2. The standard installer offers shortcuts. Market keys are stored in Windows Credential Manager, and each Windows user has their own local SQLite portfolio. macOS users continue to download **PaperTrader-macOS**.
+Download **PaperTrader-Windows** from the latest successful [GitHub Actions run](https://github.com/juandugarry/PaperTrader/actions), extract the artifact ZIP and run `PaperTrader_0.4.2_x64-setup.exe` (the filename may include a language suffix). This is an unsigned Windows x64 installer; Windows may show a publisher warning. It installs the desktop app and uses WebView2. The standard installer offers shortcuts. Market keys are saved in a local file, and each Windows user has their own local SQLite portfolio. macOS users continue to download **PaperTrader-macOS**.
 
 For development on Windows, install Node 24, the repository’s pinned Rust toolchain, Microsoft C++ Build Tools with the desktop C++ workload, and WebView2. Run `npm ci`, then `npm run desktop`. Create the installer with `npm run tauri -- build --bundles nsis` on Windows. CI tests and builds both supported platforms; no cross compilation is required on your Mac.
 

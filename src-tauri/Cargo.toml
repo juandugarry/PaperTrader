@@ -1,6 +1,6 @@
 [package]
 name = "papertrader"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.98.1"
 
@@ -27,9 +27,3 @@ tauri = { version = "2", optional = true, features = [] }
 name = "papertrader"
 path = "src/main.rs"
 required-features = ["desktop"]
-
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", default-features = false, features = ["apple-native"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", default-features = false, features = ["windows-native"] }

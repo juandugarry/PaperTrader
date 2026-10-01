@@ -105,12 +105,12 @@ describe("EODHD setup and cached reference data", () => {
   it("saves a masked key, clears the input and removes it without clearing cached prices", async () => {
     const u = userEvent.setup();
     render(<MarketSettings market={fixture().market} />);
-    await screen.findByText("API key saved · macOS Keychain");
+    await screen.findByText("API key saved · Local file on this device");
     const input = screen.getByLabelText("EODHD API key") as HTMLInputElement;
     expect(input.type).toBe("password");
     await u.type(input, "example_key_123");
     await u.click(screen.getByRole("button", { name: "Replace API key" }));
-    await screen.findByText(/API key saved in macOS Keychain/);
+    await screen.findByText(/API key saved in Local file on this device/);
     expect(saveMarketKey).toHaveBeenCalledWith("example_key_123");
     expect(input.value).toBe("");
     await u.click(screen.getByRole("button", { name: "Remove API key" }));
@@ -160,7 +160,7 @@ describe("EODHD setup and cached reference data", () => {
     expect(screen.getByRole("alert").textContent).toContain("not entitled");
     expect(screen.getByRole("img")).toBeTruthy();
   });
-  it("disables paid requests when the local allowance is exhausted and prompts for a missing key", async () => {
+  it("enforces the request cap without checking credentials when browsing", async () => {
     const s = fixture();
     s.market.requestsToday = 20;
     render(<Harness initial={s} />);
@@ -173,19 +173,14 @@ describe("EODHD setup and cached reference data", () => {
       ).disabled,
     ).toBe(true);
     cleanup();
-    vi.mocked(marketKeyStatus).mockResolvedValue({
-      configured: false,
-      supported: true,
-    });
+    vi.mocked(marketKeyStatus).mockClear();
     render(<Harness />);
-    await screen.findByText(/Add your free EODHD API key in Settings/);
     expect(
-      (
-        screen.getByRole("button", {
-          name: "Refresh BEN price",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+      screen
+        .getByRole("button", { name: "Refresh BEN price" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(marketKeyStatus).not.toHaveBeenCalled();
     expect(refreshMarketPrices).not.toHaveBeenCalled();
   });
   it("lets users explore dates and explicitly switch adjusted series", async () => {
@@ -235,9 +230,7 @@ it("draws real daily candle wicks and bodies, with OHLC readings and close-only 
       .getByLabelText("Adjust for splits and dividends")
       .hasAttribute("disabled"),
   ).toBe(true);
-  await userEvent.click(
-    screen.getByRole("button", { name: "Line" }),
-  );
+  await userEvent.click(screen.getByRole("button", { name: "Line" }));
   expect(screen.getByRole("img").querySelectorAll("polyline")).toHaveLength(1);
   rerender(<PriceChart ticker="BEN" history={history} />);
   expect(
