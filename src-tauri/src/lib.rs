@@ -1,7 +1,11 @@
 mod credentials;
+pub mod crypto;
+pub mod crypto_market;
+pub mod crypto_service;
 pub mod directory;
 pub mod domain;
 pub mod engine;
+pub mod funding;
 pub mod journal;
 pub mod market;
 pub mod market_service;
@@ -16,6 +20,76 @@ mod desktop {
     use crate::market_service::{self, KeyStatus};
     use std::sync::{Arc, Mutex};
     use tauri::Manager;
+    #[tauri::command]
+    fn get_crypto_market(
+        profile_id: String,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<crate::crypto_service::Market, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .crypto_market(&profile_id)
+    }
+    #[tauri::command]
+    async fn refresh_crypto_market(
+        profile_id: String,
+        action: String,
+        pair: Option<String>,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<crate::crypto_service::Update, String> {
+        let store = store.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::crypto_service::refresh(store.as_ref(), profile_id, action, pair)
+        })
+        .await
+        .map_err(|_| "Crypto refresh stopped unexpectedly.".to_string())?
+    }
+    #[tauri::command]
+    fn apply_crypto_stream(
+        profile_id: String,
+        messages: Vec<String>,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<crate::crypto_service::Update, String> {
+        let mut db = store.lock().map_err(|_| "Database lock unavailable")?;
+        let snapshot = db.apply_crypto_stream(&profile_id, messages)?;
+        Ok(crate::crypto_service::Update {
+            market: db.crypto_market(&profile_id)?,
+            snapshot,
+        })
+    }
+    #[tauri::command]
+    fn deposit_virtual_funds(
+        profile_id: String,
+        input: crate::funding::Deposit,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<Snapshot, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .apply_profile_action(&profile_id, ProfileAction::Deposit(input))
+    }
+    #[tauri::command]
+    fn setup_crypto_wallet(
+        profile_id: String,
+        input: crate::crypto::Setup,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<Snapshot, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .apply_profile_action(&profile_id, ProfileAction::SetupCrypto(input))
+    }
+    #[tauri::command]
+    fn execute_crypto_trade(
+        profile_id: String,
+        input: crate::crypto::Trade,
+        store: tauri::State<'_, Arc<Mutex<Store>>>,
+    ) -> Result<Snapshot, String> {
+        store
+            .lock()
+            .map_err(|_| "Database lock unavailable")?
+            .apply_profile_action(&profile_id, ProfileAction::CryptoTrade(input))
+    }
     #[tauri::command]
     fn get_snapshot(
         store: tauri::State<'_, Arc<Mutex<Store>>>,
@@ -202,6 +276,12 @@ mod desktop {
             })
             .invoke_handler(tauri::generate_handler![
                 get_snapshot,
+                deposit_virtual_funds,
+                get_crypto_market,
+                refresh_crypto_market,
+                apply_crypto_stream,
+                setup_crypto_wallet,
+                execute_crypto_trade,
                 create_profile,
                 create_security,
                 set_price,

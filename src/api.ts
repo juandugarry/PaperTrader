@@ -4,6 +4,9 @@ export interface Snapshot {
   profileId: string;
   notes: Note[];
   market: MarketSnapshot;
+  crypto?: CryptoSnapshot;
+  deposits?: DepositRecord[];
+  totalContributionsMicros?: number;
   defaultBrokerageMicros: number;
   currency: string;
   primaryMarket: string;
@@ -239,3 +242,131 @@ export const getAsxDirectory = () =>
   invoke<AsxDirectory>("get_asx_directory", { profileId: activeProfile() });
 export const refreshAsxDirectory = () =>
   invoke<AsxDirectory>("refresh_asx_directory", { profileId: activeProfile() });
+
+export interface DepositRecord {
+  id: number;
+  account: "stocks" | "crypto";
+  amountMicros: number;
+  description: string;
+  createdAt: string;
+}
+export interface CryptoWallet {
+  mode: "separate" | "shared";
+  cashMicros: number;
+  contributionsMicros: number;
+  portfolioValueMicros: number | null;
+  totalReturnMicros: number | null;
+  realisedPnlMicros: number;
+  feeMicros: number;
+}
+export interface CryptoPosition {
+  pair: string;
+  symbol: string;
+  quantityAtoms: string;
+  costBasisMicros: number;
+  pricePicos: string | null;
+  fetchedAt: string | null;
+  valueMicros: number | null;
+  unrealisedPnlMicros: number | null;
+}
+export interface CryptoExecution {
+  id: number;
+  pair: string;
+  symbol: string;
+  side: Side;
+  quantityAtoms: string;
+  pricePicos: string;
+  feeMicros: number;
+  notionalMicros: number;
+  cashDeltaMicros: number;
+  notes: string;
+  createdAt: string;
+}
+export interface CryptoSnapshot {
+  wallet: CryptoWallet | null;
+  positions: CryptoPosition[];
+  executions: CryptoExecution[];
+  assetValueMicros: number | null;
+}
+export interface CryptoTradeInput {
+  requestId: string;
+  pair: string;
+  side: Side;
+  quantityAtoms: string;
+  pricePicos: string;
+  feeMicros: number;
+  notes: string;
+}
+export const depositVirtualFunds = (input: {
+  requestId: string;
+  account: "stocks" | "crypto";
+  amountMicros: number;
+  description: string;
+}) => profileInvoke("deposit_virtual_funds", input);
+export const setupCryptoWallet = (input: {
+  requestId: string;
+  mode: "separate" | "shared";
+  startingFundsMicros: number;
+}) => profileInvoke("setup_crypto_wallet", input);
+export const executeCryptoTrade = (input: CryptoTradeInput) =>
+  profileInvoke("execute_crypto_trade", input);
+
+export interface CryptoAsset {
+  pair: string;
+  symbol: string;
+  name: string;
+  wsSymbol: string;
+  quote: string;
+}
+export interface CryptoQuote {
+  pair: string;
+  pricePicos: string;
+  usdPricePicos: string;
+  fetchedAt: string;
+  source: "rest" | "live";
+}
+export interface CryptoCandle {
+  session: string;
+  openPicos: string;
+  highPicos: string;
+  lowPicos: string;
+  closePicos: string;
+}
+export interface CryptoChart {
+  pair: string;
+  candles: CryptoCandle[];
+  fetchedAt: string;
+}
+export interface CryptoMarket {
+  assets: CryptoAsset[];
+  quotes: CryptoQuote[];
+  charts: CryptoChart[];
+  catalogFetchedAt: string | null;
+  fxFetchedAt: string | null;
+  lastError: string | null;
+  refreshing: boolean;
+}
+export interface CryptoUpdate {
+  market: CryptoMarket;
+  snapshot: Snapshot;
+}
+function rememberCrypto(update: CryptoUpdate) {
+  remember(update.snapshot);
+  return update;
+}
+export const getCryptoMarket = () =>
+  invoke<CryptoMarket>("get_crypto_market", { profileId: activeProfile() });
+export const refreshCryptoMarket = (
+  action: "catalog" | "quotes" | "history",
+  pair: string | null = null,
+) =>
+  invoke<CryptoUpdate>("refresh_crypto_market", {
+    profileId: activeProfile(),
+    action,
+    pair,
+  }).then(rememberCrypto);
+export const applyCryptoStream = (messages: string[]) =>
+  invoke<CryptoUpdate>("apply_crypto_stream", {
+    profileId: activeProfile(),
+    messages,
+  }).then(rememberCrypto);

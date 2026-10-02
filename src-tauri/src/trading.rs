@@ -278,13 +278,7 @@ pub fn execute(c: &Connection, input: ExecuteTrade) -> Result<(), String> {
     }
     let content = input.journal.clone().unwrap_or_default();
     content.validate(input.side)?;
-    let cash: i64 = c
-        .query_row(
-            "SELECT COALESCE(SUM(amount_micros),0) FROM cash_ledger WHERE portfolio_id=1",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
+    let cash = crate::funding::cash(c)?;
     let history = executions(c)?;
     let states = states(&history)?;
     let position = states.get(&input.security_id).cloned().unwrap_or_default();

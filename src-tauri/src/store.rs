@@ -21,6 +21,9 @@ pub struct Snapshot {
     pub profile_id: String,
     pub notes: Vec<Note>,
     pub market: MarketSnapshot,
+    pub crypto: crate::crypto::Snapshot,
+    pub deposits: Vec<crate::funding::DepositRecord>,
+    pub total_contributions_micros: i64,
     pub default_brokerage_micros: i64,
     pub currency: String,
     pub primary_market: String,
@@ -37,6 +40,9 @@ pub enum ProfileAction {
     SaveJournal(SaveJournal),
     SaveNote(SaveNote),
     DeleteNote(DeleteNote),
+    Deposit(crate::funding::Deposit),
+    SetupCrypto(crate::crypto::Setup),
+    CryptoTrade(crate::crypto::Trade),
 }
 pub struct Store {
     connection: Connection,
@@ -59,7 +65,7 @@ impl Store {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 7 {
+        if version > 8 {
             return Err("This database is newer than this version of PaperTrader.".into());
         }
         if version == 0 {
@@ -118,6 +124,14 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
+        if version < 8 {
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            tx.execute_batch(include_str!("../migrations/008_crypto_wallet.sql"))
+                .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", 8)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
         Ok(Self {
             connection,
             credential_path: None,
@@ -142,14 +156,18 @@ impl Store {
             currency,
             primary_market,
             starting_capital_micros,
-            cash_micros,
+            _legacy_cash_micros,
             created_at,
             profile_id,
         )) = metadata
         else {
             return Ok(None);
         };
-        let trading = trading::read(&tx, cash_micros, starting_capital_micros)?;
+        let cash_micros = crate::funding::cash(&tx)?;
+        let total_contributions_micros = crate::funding::stock_contributions(&tx)?;
+        let crypto = crate::crypto::read(&tx)?;
+        let deposits = crate::funding::read(&tx)?;
+        let trading = crate::crypto::stock_snapshot(&tx)?;
         let journal = journal::read(&tx)?;
         let notes = notes::read(&tx)?;
         let market = Self::read_market(&tx)?;
@@ -158,6 +176,9 @@ impl Store {
             profile_id,
             notes,
             market,
+            crypto,
+            deposits,
+            total_contributions_micros,
             default_brokerage_micros,
             currency,
             primary_market,
@@ -195,9 +216,8 @@ impl Store {
             Self::check_profile(&tx, expected)?;
         }
         action(&tx)?;
-        let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
         // Check all derived totals and limits before committing the mutation.
-        trading::read(&tx, cash, starting)?;
+        crate::crypto::stock_snapshot(&tx)?;
         journal::read(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         self.snapshot()?
@@ -242,6 +262,9 @@ impl Store {
             ProfileAction::SaveJournal(input) => journal::save(c, input),
             ProfileAction::SaveNote(input) => notes::save(c, input),
             ProfileAction::DeleteNote(input) => notes::delete(c, input),
+            ProfileAction::Deposit(input) => crate::funding::deposit(c, input),
+            ProfileAction::SetupCrypto(input) => crate::crypto::setup(c, input),
+            ProfileAction::CryptoTrade(input) => crate::crypto::execute(c, input),
         })
     }
     pub fn reset_profile(&mut self, profile_id: &str, confirmation: &str) -> Result<(), String> {
@@ -254,7 +277,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Self::check_profile(&tx, profile_id)?;
         // Explicit whole-profile reset only. Ordinary fill and journal edits retain their immutability triggers.
-        tx.execute_batch("DROP TABLE asx_directory; DROP TABLE daily_prices; DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
+        tx.execute_batch("DROP TABLE crypto_network; DROP TABLE crypto_executions; DROP TABLE crypto_candles; DROP TABLE crypto_quotes; DROP TABLE crypto_catalog; DROP TABLE virtual_deposits; DROP TABLE crypto_wallet; DROP TABLE asx_directory; DROP TABLE daily_prices; DROP TABLE journal_revisions; DROP TABLE journal_entries; DROP TABLE notes; DROP TABLE cash_ledger; DROP TABLE executions; DROP TABLE securities; DROP TABLE portfolios; DROP TABLE settings;").map_err(|e|e.to_string())?;
         tx.execute_batch(include_str!("../migrations/001_foundation.sql"))
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/002_manual_trading.sql"))
@@ -269,7 +292,9 @@ impl Store {
             .map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/007_candles.sql"))
             .map_err(|e| e.to_string())?;
-        tx.pragma_update(None, "user_version", 7)
+        tx.execute_batch(include_str!("../migrations/008_crypto_wallet.sql"))
+            .map_err(|e| e.to_string())?;
+        tx.pragma_update(None, "user_version", 8)
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -317,6 +342,94 @@ impl Store {
             refreshing,
             histories,
         })
+    }
+    pub fn crypto_market(&self, profile_id: &str) -> Result<crate::crypto_service::Market, String> {
+        let tx = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        crate::crypto_service::read(&tx)
+    }
+    pub fn apply_crypto_stream(
+        &mut self,
+        profile_id: &str,
+        messages: Vec<String>,
+    ) -> Result<Snapshot, String> {
+        self.mutate_profile(Some(profile_id), |c| {
+            crate::crypto_service::apply_stream(c, messages)
+        })
+    }
+    pub fn begin_crypto_refresh(&mut self, profile_id: &str) -> Result<String, String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let (job, started): (Option<String>, Option<i64>) = tx
+            .query_row(
+                "SELECT job_id,started FROM crypto_network WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp();
+        if job.is_some() && started.is_some_and(|t| now - t < 120) {
+            return Err("A crypto refresh is already running.".into());
+        }
+        if started.is_some_and(|t| now - t < 3) {
+            return Err("Wait a few seconds between crypto refreshes.".into());
+        }
+        let id: String = tx
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE crypto_network SET job_id=?1,started=?2 WHERE id=1",
+            params![id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+    pub fn finish_crypto_refresh(
+        &mut self,
+        profile_id: &str,
+        job: &str,
+        data: Result<crate::crypto_service::Data, String>,
+    ) -> Result<(), String> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        Self::check_profile(&tx, profile_id)?;
+        let active: Option<String> = tx
+            .query_row("SELECT job_id FROM crypto_network WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        if active.as_deref() != Some(job) {
+            return Err("This crypto refresh is no longer active.".into());
+        }
+        tx.execute_batch("SAVEPOINT crypto_cache")
+            .map_err(|e| e.to_string())?;
+        let result = data.and_then(|data| {
+            crate::crypto_service::apply(&tx, data)?;
+            crate::crypto::stock_snapshot(&tx)?;
+            Ok(())
+        });
+        if result.is_err() {
+            tx.execute_batch("ROLLBACK TO crypto_cache")
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute_batch("RELEASE crypto_cache")
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE crypto_network SET job_id=NULL,last_error=?1 WHERE id=1",
+            [result.as_ref().err()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        result
     }
     pub fn credential_path(&self, profile_id: &str) -> Result<PathBuf, String> {
         self.verify_profile(profile_id)?;
@@ -510,8 +623,7 @@ impl Store {
                     tx.execute("INSERT INTO daily_prices(security_id,session_date,close_micros,adjusted_close_micros,open_micros,high_micros,low_micros) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![security.id,p.session_date,p.close_micros,p.adjusted_close_micros,p.open_micros,p.high_micros,p.low_micros]).map_err(|e|e.to_string())?;
                 }
                 tx.execute("UPDATE securities SET current_price_micros=?1,price_as_of=?2,price_source='eodhd',price_updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_fetched_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),market_error=NULL,price_version=price_version+1 WHERE id=?3",params![latest.close_micros,latest.session_date,security.id]).map_err(|e|e.to_string())?;
-                let (cash,starting):(i64,i64)=tx.query_row("SELECT SUM(amount_micros),SUM(CASE WHEN kind='opening_capital' THEN amount_micros ELSE 0 END) FROM cash_ledger WHERE portfolio_id=1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
-                trading::read(&tx,cash,starting)?;
+                        crate::crypto::stock_snapshot(&tx)?;
                 Ok(())
             });
             if let Err(error) = saved {
@@ -569,6 +681,294 @@ mod tests {
     }
     fn memory() -> Store {
         Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
+    }
+    fn deposit_input(account: &str, amount: i64, n: u32) -> crate::funding::Deposit {
+        crate::funding::Deposit {
+            request_id: format!("00000000-0000-0000-0000-{n:012}"),
+            account: account.into(),
+            amount_micros: amount,
+            description: "Virtual top up".into(),
+        }
+    }
+    fn crypto_fixture(db: &mut Store, mode: &str) {
+        let id = profile(db);
+        db.apply_profile_action(
+            &id,
+            ProfileAction::SetupCrypto(crate::crypto::Setup {
+                mode: mode.into(),
+                starting_funds_micros: if mode == "separate" { 500_000_000 } else { 0 },
+                request_id: "00000000-0000-0000-0000-000000000090".into(),
+            }),
+        )
+        .unwrap();
+        db.connection.execute("INSERT INTO crypto_catalog(id,body,fetched_at) VALUES(1,?1,'2026-10-02T00:00:00Z')",[r#"[{"pair":"XBTUSD","symbol":"BTC","name":"Bitcoin","wsSymbol":"BTC/USD","quote":"USD"}]"#]).unwrap();
+        db.connection.execute("INSERT INTO crypto_quotes VALUES('XBTUSD',100000000000000000,'2026-10-02T00:00:00Z',65000000000000000,'rest')",[]).unwrap();
+    }
+    fn crypto_fill(side: crate::engine::Side, atoms: &str, n: u32) -> crate::crypto::Trade {
+        crate::crypto::Trade {
+            request_id: format!("11111111-1111-1111-1111-{n:012}"),
+            pair: "XBTUSD".into(),
+            side,
+            quantity_atoms: atoms.into(),
+            price_picos: "100000000000000000".into(),
+            fee_micros: 1_000_000,
+            notes: "Virtual crypto trade".into(),
+        }
+    }
+    #[test]
+    fn crypto_cache_failures_stale_ticks_and_reset_races_keep_accounting_safe() {
+        let mut db = prepared();
+        crypto_fixture(&mut db, "shared");
+        let id = profile(&db);
+        db.apply_profile_action(
+            &id,
+            ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "100000", 1)),
+        )
+        .unwrap();
+        db.connection
+            .execute("UPDATE crypto_network SET aud_usd_picos=650000000000", [])
+            .unwrap();
+        let timestamp = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+        let tick=serde_json::json!({"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","last":65001,"timestamp":timestamp}]}).to_string();
+        let s = db.apply_crypto_stream(&id, vec![tick.clone()]).unwrap();
+        assert_eq!(s.cash_micros, 899_000_000);
+        assert_eq!(s.crypto.executions[0].price_picos, "100000000000000000");
+        assert_eq!(s.market.requests_today, 0);
+        let price = db.crypto_market(&id).unwrap().quotes[0].price_picos.clone();
+        let older = (chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+        let stale=serde_json::json!({"channel":"ticker","type":"update","data":[{"symbol":"BTC/USD","last":1,"timestamp":older}]}).to_string();
+        db.apply_crypto_stream(&id, vec![stale]).unwrap();
+        assert_eq!(db.crypto_market(&id).unwrap().quotes[0].price_picos, price);
+        assert!(db
+            .apply_crypto_stream(&id, vec![tick.replace("BTC/USD", "UNKNOWN/USD")])
+            .is_err());
+        assert_eq!(db.crypto_market(&id).unwrap().quotes[0].price_picos, price);
+        let job = db.begin_crypto_refresh(&id).unwrap();
+        assert!(db.begin_crypto_refresh(&id).is_err());
+        assert!(db
+            .finish_crypto_refresh(&id, &job, Err("Offline".into()))
+            .is_err());
+        assert_eq!(db.crypto_market(&id).unwrap().quotes[0].price_picos, price);
+        assert!(!db.crypto_market(&id).unwrap().refreshing);
+        db.connection
+            .execute("UPDATE crypto_network SET started=unixepoch()-4", [])
+            .unwrap();
+        let job = db.begin_crypto_refresh(&id).unwrap();
+        db.reset_profile(&id, "RESET").unwrap();
+        let fresh = db.create_profile(input()).unwrap();
+        assert!(db
+            .finish_crypto_refresh(
+                &id,
+                &job,
+                Ok(crate::crypto_service::Data::Quotes(
+                    crate::crypto_market::Quotes {
+                        aud_usd_picos: 650000000000,
+                        values: vec![]
+                    }
+                ))
+            )
+            .is_err());
+        assert!(db.apply_crypto_stream(&id, vec![tick]).is_err());
+        assert!(db
+            .crypto_market(&fresh.profile_id)
+            .unwrap()
+            .quotes
+            .is_empty());
+    }
+    #[test]
+    fn crypto_setup_and_fills_retry_without_duplicate_funds_or_orders() {
+        let mut db = prepared();
+        crypto_fixture(&mut db, "separate");
+        let id = profile(&db);
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::SetupCrypto(crate::crypto::Setup {
+                    mode: "separate".into(),
+                    starting_funds_micros: 500_000_000,
+                    request_id: "00000000-0000-0000-0000-000000000090".into(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(s.deposits.len(), 1);
+        db.apply_profile_action(
+            &id,
+            ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "100000", 1)),
+        )
+        .unwrap();
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "100000", 1)),
+            )
+            .unwrap();
+        assert_eq!(s.crypto.executions.len(), 1);
+        assert_eq!(s.crypto.wallet.unwrap().cash_micros, 399_000_000);
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "200000", 1))
+            )
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(
+                    crate::engine::Side::BUY,
+                    "9000000000000000000",
+                    2
+                ))
+            )
+            .is_err());
+        assert_eq!(db.snapshot().unwrap().unwrap().crypto.executions.len(), 1);
+    }
+    #[test]
+    fn deposits_are_idempotent_immutable_and_excluded_from_returns() {
+        let mut db = prepared();
+        let id = profile(&db);
+        db.apply_profile_action(
+            &id,
+            ProfileAction::Deposit(deposit_input("stocks", 500_000_000, 1)),
+        )
+        .unwrap();
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::Deposit(deposit_input("stocks", 500_000_000, 1)),
+            )
+            .unwrap();
+        assert_eq!(s.cash_micros, 1_500_000_000);
+        assert_eq!(s.total_contributions_micros, 1_500_000_000);
+        assert_eq!(s.starting_capital_micros, 1_000_000_000);
+        assert_eq!(s.trading.total_return_micros, Some(0));
+        assert_eq!(s.deposits.len(), 1);
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::Deposit(deposit_input("stocks", 600_000_000, 1))
+            )
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::Deposit(deposit_input("stocks", -10000, 2))
+            )
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                "stale",
+                ProfileAction::Deposit(deposit_input("stocks", 10000, 2))
+            )
+            .is_err());
+        assert!(db
+            .connection
+            .execute("DELETE FROM virtual_deposits", [])
+            .is_err());
+    }
+    #[test]
+    fn separate_crypto_cash_and_fractional_partial_sales_reconcile() {
+        let mut db = prepared();
+        crypto_fixture(&mut db, "separate");
+        let id = profile(&db);
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "100000", 1)),
+            )
+            .unwrap();
+        assert_eq!(s.cash_micros, 1_000_000_000);
+        assert_eq!(s.crypto.wallet.as_ref().unwrap().cash_micros, 399_000_000);
+        assert_eq!(s.crypto.positions[0].quantity_atoms, "100000");
+        assert_eq!(s.crypto.positions[0].cost_basis_micros, 101_000_000);
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::SELL, "50000", 2)),
+            )
+            .unwrap();
+        assert_eq!(s.crypto.positions[0].cost_basis_micros, 50_500_000);
+        assert_eq!(
+            s.crypto.wallet.as_ref().unwrap().realised_pnl_micros,
+            -1_500_000
+        );
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::SELL, "50000", 3)),
+            )
+            .unwrap();
+        assert!(s.crypto.positions.is_empty());
+        assert_eq!(s.crypto.wallet.as_ref().unwrap().cash_micros, 497_000_000);
+        assert_eq!(
+            s.crypto.wallet.as_ref().unwrap().total_return_micros,
+            Some(-3_000_000)
+        );
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::SELL, "1", 4))
+            )
+            .is_err());
+        db.apply_profile_action(
+            &id,
+            ProfileAction::Deposit(deposit_input("crypto", 100_000_000, 5)),
+        )
+        .unwrap();
+        assert_eq!(
+            db.snapshot()
+                .unwrap()
+                .unwrap()
+                .crypto
+                .wallet
+                .unwrap()
+                .total_return_micros,
+            Some(-3_000_000)
+        );
+    }
+    #[test]
+    fn shared_crypto_reduces_stock_cash_without_creating_a_fake_loss() {
+        let mut db = prepared();
+        crypto_fixture(&mut db, "shared");
+        let id = profile(&db);
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "900000", 1)),
+            )
+            .unwrap();
+        assert_eq!(s.cash_micros, 99_000_000);
+        assert_eq!(s.trading.portfolio_value_micros, Some(999_000_000));
+        assert_eq!(s.trading.total_return_micros, Some(-1_000_000));
+        assert_eq!(
+            s.crypto.wallet.unwrap().portfolio_value_micros,
+            Some(999_000_000)
+        );
+        assert!(db
+            .execute_trade(fill(1, crate::engine::Side::BUY, 10, 10_000_000, 0))
+            .is_err());
+        assert!(db
+            .apply_profile_action(
+                &id,
+                ProfileAction::Deposit(deposit_input("crypto", 100_000_000, 2))
+            )
+            .is_err());
+        let s = db
+            .apply_profile_action(
+                &id,
+                ProfileAction::Deposit(deposit_input("stocks", 100_000_000, 2)),
+            )
+            .unwrap();
+        assert_eq!(s.cash_micros, 199_000_000);
+        assert_eq!(s.trading.total_return_micros, Some(-1_000_000));
+        assert!(db
+            .connection
+            .execute("UPDATE crypto_executions SET quantity_atoms=1", [])
+            .is_err());
+        db.reset_profile(&id, "RESET").unwrap();
+        let s = db.create_profile(input()).unwrap();
+        assert!(s.crypto.wallet.is_none());
+        assert!(s.deposits.is_empty());
+        assert!(s.crypto.executions.is_empty());
     }
     #[test]
     fn v5_close_only_cache_migrates_without_fabricating_candles() {
@@ -721,9 +1121,84 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
+    fn crypto_and_deposits_persist_across_reopen_and_shared_windows() {
+        let path = std::env::temp_dir().join(format!(
+            "papertrader-crypto-reopen-{}.sqlite",
+            std::process::id()
+        ));
+        let expected;
+        {
+            let mut db = Store::open(&path).unwrap();
+            db.create_profile(input()).unwrap();
+            crypto_fixture(&mut db, "shared");
+            let id = profile(&db);
+            let mut other = Store::open(&path).unwrap();
+            db.apply_profile_action(
+                &id,
+                ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "900000", 1)),
+            )
+            .unwrap();
+            // A second connection must use current shared cash, rather than its opening balance.
+            assert!(other
+                .apply_profile_action(
+                    &id,
+                    ProfileAction::CryptoTrade(crypto_fill(crate::engine::Side::BUY, "100000", 2))
+                )
+                .is_err());
+            let snapshot = other
+                .apply_profile_action(
+                    &id,
+                    ProfileAction::Deposit(deposit_input("stocks", 100_000_000, 3)),
+                )
+                .unwrap();
+            assert_eq!(snapshot.cash_micros, 199_000_000);
+            assert_eq!(snapshot.crypto.executions.len(), 1);
+            expected = serde_json::to_value(snapshot).unwrap();
+        }
+        for _ in 0..2 {
+            let db = Store::open(&path).unwrap();
+            assert_eq!(
+                serde_json::to_value(db.snapshot().unwrap().unwrap()).unwrap(),
+                expected
+            );
+            assert_eq!(
+                db.crypto_market(expected["profileId"].as_str().unwrap())
+                    .unwrap()
+                    .assets
+                    .len(),
+                1
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn v7_migration_preserves_stock_fills_and_leaves_crypto_unconfigured() {
+        let mut old = prepared();
+        let id = profile(&old);
+        old.apply_profile_action(
+            &id,
+            ProfileAction::ExecuteTrade(fill(
+                1,
+                crate::engine::Side::BUY,
+                24,
+                10_115_000,
+                3_000_000,
+            )),
+        )
+        .unwrap();
+        let expected = serde_json::to_value(old.snapshot().unwrap().unwrap()).unwrap();
+        old.connection.execute_batch("DROP TABLE crypto_network; DROP TABLE crypto_executions; DROP TABLE crypto_candles; DROP TABLE crypto_quotes; DROP TABLE crypto_catalog; DROP TABLE virtual_deposits; DROP TABLE crypto_wallet; PRAGMA user_version=7;").unwrap();
+        let upgraded = Store::from_connection(old.connection).unwrap();
+        let snapshot = upgraded.snapshot().unwrap().unwrap();
+        assert!(snapshot.crypto.wallet.is_none());
+        assert!(snapshot.crypto.executions.is_empty());
+        assert!(snapshot.deposits.is_empty());
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), expected);
+    }
+    #[test]
     fn refuses_newer_schema() {
         let c = Connection::open_in_memory().unwrap();
-        c.pragma_update(None, "user_version", 8).unwrap();
+        c.pragma_update(None, "user_version", 9).unwrap();
         assert!(Store::from_connection(c).is_err());
     }
     fn prepared() -> Store {

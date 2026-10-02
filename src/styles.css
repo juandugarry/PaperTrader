@@ -1328,3 +1328,69 @@ select:focus-visible {
     align-items: stretch;
   }
 }
+
+.crypto-intro,
+.crypto-directory,
+.crypto-detail {
+  margin-bottom: 24px;
+}
+.crypto-intro > p,
+.crypto-directory > p {
+  max-width: 950px;
+}
+.crypto-metrics {
+  margin: 24px 0;
+}
+.crypto-live-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 20px 0;
+}
+.crypto-live-controls .adjustment {
+  margin: 0;
+}
+.crypto-selected {
+  background: #edf6f2;
+}
+.crypto-ticket {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 24px;
+}
+.crypto-note {
+  min-width: 160px;
+  max-width: 300px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wallet-setup,
+.deposit-dialog {
+  margin-top: 20px;
+}
+.deposit-dialog {
+  max-width: 760px;
+  margin-bottom: 24px;
+}
+.virtual-deposit {
+  margin: 16px 0;
+}
+
+.crypto-intro,
+.crypto-directory,
+.crypto-detail,
+.crypto-history {
+  padding: 24px;
+}
+.crypto-detail .section-title {
+  padding: 0 0 20px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.crypto-detail > .muted {
+  overflow-wrap: anywhere;
+}
+.deposit-dialog {
+  padding: 20px;
+}

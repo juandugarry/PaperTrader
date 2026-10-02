@@ -24,9 +24,10 @@ export default function ProfileReset({ onReset }: { onReset: () => void }) {
       <h3>Start completely afresh</h3>
       <p>
         Reset removes your trader profile, portfolio, cash ledger, all trades
-        and journal revisions, securities, saved prices, notepad notes and saved
-        API key from this device. You’ll return to first-launch setup. Your
-        daily market-data allowance does not reset.
+        and journal revisions, crypto wallet and fills, virtual deposits,
+        securities, cached market data, notepad notes and saved API key from
+        this device. You’ll return to first-launch setup. Your daily market-data
+        allowance does not reset.
       </p>
       {confirming ? (
         <form onSubmit={submit} aria-label="Confirm profile reset">

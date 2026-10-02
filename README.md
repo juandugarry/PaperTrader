@@ -1,8 +1,21 @@
 # PaperTrader
 
-A local-first desktop workspace for learning ASX paper trading with fictional money. Built for macOS and Windows with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
+A local-first desktop workspace for learning ASX and crypto paper trading with fictional money. Built for macOS and Windows with Tauri 2, React, TypeScript and SQLite. No server, PaperTrader cloud account, AI integration or real brokerage connection. Optional EODHD retrieval uses your own API key.
 
-## Phase 4 · 0.4.2 · ASX directory, charts and Windows
+## Crypto update · 0.5.0
+
+- **Crypto → wallet setup:** choose fresh fictional AUD funds for a separate wallet (default), or share your existing stock balance. Confirm the choice once for the profile; changing funding mode requires a profile reset.
+- **Load crypto catalogue:** browse and search every active USD spot crypto asset supported by Kraken, including Bitcoin and Ethereum. The live validation found 626 assets; coverage changes over time and does not include every cryptocurrency worldwide. Common coins have company-style names; other tokens use their exchange symbol.
+- **Live price updates:** selected coins and wallet holdings update through Kraken’s public WebSocket while Crypto is visible. No API key or exchange account is needed. Other catalogue prices remain cached until **Refresh all crypto prices**. There is no daily app cap; requests have a short cooldown and provider limits still apply.
+- **Hourly charts:** explicitly load actual USD OHLC history, switch between candlesticks and lines, and explore one day, one week or 30 days. AUD reference prices use the latest Kraken AUD/USD conversion; historical charts retain their actual USD currency.
+- Simulate fractional buys and sells with up to eight quantity decimals, an AUD fill price, optional virtual fee and immutable notes. Review locks the fill details before confirmation. Live prices only update reference valuations.
+- **Deposit virtual funds:** add fictional money to stock/shared cash or the separate crypto wallet in Trade, Crypto or Settings. Deposits remain in history and increase contributions without appearing as investment gains. There are no real payments, wallet addresses or transfers.
+
+Cached catalogues, reference prices, charts and simulation history persist locally. Live updates pause when the app is in the background and reconnect with backoff. Thinly traded assets may have old last-trade timestamps even when connected. See [crypto accounting and provider details](docs/crypto.md).
+
+Existing profiles upgrade in place, keeping stock progress and leaving the crypto wallet unconfigured until you choose its funding. **Settings → Reset profile** also clears crypto fills, deposits and caches.
+
+## ASX directory, charts and Windows
 
 - **Settings → ASX end-of-day prices:** create a free EODHD account and save its API key in a local file beside your portfolio database. No system credential prompts; the key is readable by software with access to that file. It is never returned through IPC or saved in frontend storage.
 - **Trade → select a stock → Refresh price:** fetch its latest published closing price and up to one year of daily history. Refresh all updates your local security list when enough allowance remains.
@@ -30,17 +43,17 @@ In Trade, refresh a stock once, then switch its daily chart between **Line** and
 
 ## Windows installer
 
-Download **PaperTrader-Windows** from the latest successful [GitHub Actions run](https://github.com/juandugarry/PaperTrader/actions), extract the artifact ZIP and run `PaperTrader_0.4.2_x64-setup.exe` (the filename may include a language suffix). This is an unsigned Windows x64 installer; Windows may show a publisher warning. It installs the desktop app and uses WebView2. The standard installer offers shortcuts. Market keys are saved in a local file, and each Windows user has their own local SQLite portfolio. macOS users continue to download **PaperTrader-macOS**.
+Download **PaperTrader-Windows** from the latest successful [GitHub Actions run](https://github.com/juandugarry/PaperTrader/actions), extract the artifact ZIP and run `PaperTrader_0.5.0_x64-setup.exe` (the filename may include a language suffix). This is an unsigned Windows x64 installer; Windows may show a publisher warning. It installs the desktop app and uses WebView2. The standard installer offers shortcuts. Market keys are saved in a local file, and each Windows user has their own local SQLite portfolio. macOS users continue to download **PaperTrader-macOS**.
 
 For development on Windows, install Node 24, the repository’s pinned Rust toolchain, Microsoft C++ Build Tools with the desktop C++ workload, and WebView2. Run `npm ci`, then `npm run desktop`. Create the installer with `npm run tauri -- build --bundles nsis` on Windows. CI tests and builds both supported platforms; no cross compilation is required on your Mac.
 
 ## Reset and notepad
 
-- **Settings → Reset profile:** type `RESET` to permanently clear the profile, portfolio, fills, journal, securities, prices and notes, then return to fresh setup. This cannot be undone.
+- **Settings → Reset profile:** type `RESET` to permanently clear the profile, portfolio, stock and crypto fills, deposits, journal, securities, prices and notes, then return to fresh setup. This cannot be undone.
 - **Journal → Notepad:** create, search, edit and delete local notes. Save explicitly; unsaved drafts are protected when switching pages or notes. Save before closing the app.
 - Existing profiles upgrade without losing progress. Reset occurs only after explicit confirmation.
 
-Prices and charts require your own EODHD key; manual use needs no external account.
+ASX prices and charts require your own EODHD key. Crypto market data and manual trading need no external account.
 
 ## Phase 3 · linked trading journal
 
@@ -56,7 +69,7 @@ Phase 2's manual securities, timestamped reference prices, BUY/SELL, brokerage, 
 
 Database migration 003 adds blank journals to existing Phase 2 fills, clearly marked as added after the fill. It does not invent an original thesis or rewrite accounting. New fills, cash movements and initial commentary commit together. Journal edits use optimistic version checks to prevent silently overwriting another window's changes.
 
-See [architecture and accounting rules](docs/architecture.md). Phase 4 adds end-of-day retrieval; pending orders, analytics and AI remain deferred. The app has no brokerage connection or real-money functionality.
+See [architecture and accounting rules](docs/architecture.md). ASX uses end-of-day retrieval; crypto adds public live market data. Pending orders, analytics and AI remain deferred. The app has no brokerage connection or real-money functionality.
 
 ## Open from your Mac desktop
 

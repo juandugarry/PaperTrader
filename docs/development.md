@@ -64,3 +64,7 @@ Keychain and Credential Manager have been removed. The same credential code comp
 On a desktop, save your own key once after updating from 0.4.1. Navigate Trade/Stocks/Settings and restart: there must be no OS credential prompts. Refresh explicitly to validate provider access. Remove the key and confirm cached data remains; refresh should ask for setup through an ordinary application error. Reset clears the local key file. Older OS credential entries are not accessed or migrated.
 
 GitHub's API remains blocked in this environment, but public Actions run/job HTML is accessible for step outcomes; detailed logs require sign-in.
+
+## Crypto and deposits (0.5.0)
+
+Read [crypto coverage, accounting and smoke tests](crypto.md). Headless tests cover migration 007→008 without changes to stock fills, persistent crypto/deposit history, and shared-cash checks across two database connections. The public REST smoke needs api.kraken.com; the desktop live feed needs wss://ws.kraken.com/v2. Neither needs a token or account. Keep TLS verification enabled. Ordinary tests remain offline. Browser interaction tests verify frontend IPC behavior; native packaging is checked by both macOS and Windows Actions jobs.

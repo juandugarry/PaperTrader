@@ -1,3 +1,4 @@
+import VirtualDeposit from "./VirtualDeposit";
 import MarketPrices from "./MarketPrices";
 import {
   JournalFields,
@@ -111,24 +112,43 @@ export default function TradingWorkspace({
     <>
       <div className="hero panel">
         <div>
-          <span className="eyebrow">TOTAL PORTFOLIO VALUE</span>
+          <span className="eyebrow">
+            {snapshot.crypto?.wallet?.mode === "shared"
+              ? "SHARED STOCK + CRYPTO VALUE"
+              : "TOTAL PORTFOLIO VALUE"}
+          </span>
           <h2>
             {trading.portfolioValueMicros === null
               ? "Not priced"
               : formatMoney(trading.portfolioValueMicros)}
           </h2>
           <span className="muted">
-            Starting capital {formatMoney(snapshot.startingCapitalMicros)}
+            Total virtual contributions{" "}
+            {formatMoney(
+              snapshot.totalContributionsMicros ??
+                snapshot.startingCapitalMicros,
+            )}
           </span>
         </div>
         <div className="return">
           <span className="eyebrow">TOTAL RETURN</span>
           <strong>
-            {percent(trading.totalReturnMicros, snapshot.startingCapitalMicros)}
+            {percent(
+              trading.totalReturnMicros,
+              snapshot.totalContributionsMicros ??
+                snapshot.startingCapitalMicros,
+            )}
           </strong>
           <span>{formatMoney(trading.brokeragePaidMicros)} brokerage paid</span>
         </div>
       </div>
+      <VirtualDeposit account="stocks" onChanged={onChanged} />
+      {snapshot.crypto?.wallet?.mode === "shared" && (
+        <p className="muted">
+          Cash and total value include the shared crypto wallet. The position
+          metrics below cover stocks.
+        </p>
+      )}
       <div className="metrics">
         {metrics.map(([label, value]) => (
           <section className="panel metric" key={label}>

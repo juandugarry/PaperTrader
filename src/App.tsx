@@ -1,3 +1,5 @@
+import CryptoWorkspace from "./components/CryptoWorkspace";
+import VirtualDeposit from "./components/VirtualDeposit";
 import StocksDirectory from "./components/StocksDirectory";
 import MarketSettings from "./components/MarketSettings";
 import Notepad from "./components/Notepad";
@@ -13,7 +15,7 @@ import { formatMoney, parseMoney } from "./domain/money";
 import TradingWorkspace from "./components/TradingWorkspace";
 import JournalWorkspace from "./components/JournalWorkspace";
 
-type Page = "Trade" | "Stocks" | "Journal" | "Learn" | "Settings";
+type Page = "Trade" | "Stocks" | "Crypto" | "Journal" | "Learn" | "Settings";
 const lessons = [
   {
     title: "How stock markets work",
@@ -89,7 +91,7 @@ export default function App() {
             profile.
           </p>
           <p className="muted">
-            Phase 4 · No cloud account · Fictional money only
+            Phase 5 · No cloud account · Fictional money only
           </p>
         </section>
       </div>
@@ -119,17 +121,19 @@ export default function App() {
         <Brand />
         <div className="workspace-label">YOUR WORKSPACE</div>
         <nav aria-label="Main navigation">
-          {(["Trade", "Stocks", "Journal", "Learn"] as Page[]).map((tab, i) => (
-            <button
-              key={tab}
-              className={page === tab ? "nav active" : "nav"}
-              aria-current={page === tab ? "page" : undefined}
-              onClick={() => navigate(tab)}
-            >
-              <span aria-hidden="true">{["◫", "⌕", "▤", "◇"][i]}</span>
-              {tab}
-            </button>
-          ))}
+          {(["Trade", "Stocks", "Crypto", "Journal", "Learn"] as Page[]).map(
+            (tab, i) => (
+              <button
+                key={tab}
+                className={page === tab ? "nav active" : "nav"}
+                aria-current={page === tab ? "page" : undefined}
+                onClick={() => navigate(tab)}
+              >
+                <span aria-hidden="true">{["◫", "⌕", "₿", "▤", "◇"][i]}</span>
+                {tab}
+              </button>
+            ),
+          )}
         </nav>
         <div className="sidebar-bottom">
           <button
@@ -161,27 +165,31 @@ export default function App() {
             <h1>
               {page === "Trade"
                 ? "Your portfolio"
-                : page === "Stocks"
-                  ? "Explore ASX stocks"
-                  : page === "Journal"
-                    ? "Trading journal"
-                    : page === "Learn"
-                      ? "Build your trading knowledge"
-                      : "Your local workspace"}
+                : page === "Crypto"
+                  ? "Your crypto workspace"
+                  : page === "Stocks"
+                    ? "Explore ASX stocks"
+                    : page === "Journal"
+                      ? "Trading journal"
+                      : page === "Learn"
+                        ? "Build your trading knowledge"
+                        : "Your local workspace"}
             </h1>
             <p>
               {page === "Trade"
                 ? "A clear view of your virtual capital."
-                : page === "Stocks"
-                  ? "Find a company, look up its ticker, and add it to Trade."
-                  : page === "Journal"
-                    ? "Good decisions start with a written plan."
-                    : page === "Learn"
-                      ? "Understand the concepts. Develop your own process."
-                      : "An independent portfolio, stored on this device."}
+                : page === "Crypto"
+                  ? "Live markets. Fractional trades. Fictional funds."
+                  : page === "Stocks"
+                    ? "Find a company, look up its ticker, and add it to Trade."
+                    : page === "Journal"
+                      ? "Good decisions start with a written plan."
+                      : page === "Learn"
+                        ? "Understand the concepts. Develop your own process."
+                        : "An independent portfolio, stored on this device."}
             </p>
           </div>
-          <span className="phase">PHASE 4</span>
+          <span className="phase">PHASE 5</span>
         </div>
         {pendingNavigation && (
           <div className="unsaved-confirm">
@@ -207,6 +215,9 @@ export default function App() {
               Stay in notepad
             </button>
           </div>
+        )}
+        {page === "Crypto" && (
+          <CryptoWorkspace snapshot={snapshot} onChanged={setSnapshot} />
         )}
         {page === "Stocks" && (
           <StocksDirectory snapshot={snapshot} onChanged={setSnapshot} />
@@ -303,6 +314,51 @@ export default function App() {
               Profile settings are read-only. Brokerage can be overridden on
               each fill. Backup and restore will be added later.
             </p>
+            <h3>Virtual deposits</h3>
+            <h4>Stock / shared balance</h4>
+            <VirtualDeposit account="stocks" onChanged={setSnapshot} />
+            {snapshot.crypto?.wallet?.mode === "separate" && (
+              <div>
+                <h4>Separate crypto balance</h4>
+                <VirtualDeposit account="crypto" onChanged={setSnapshot} />
+              </div>
+            )}
+            <p className="muted">
+              Deposits add fictional capital and are excluded from investment
+              gains. A shared crypto wallet uses stock deposits.
+            </p>
+            {!!snapshot.deposits?.length && (
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Recorded</th>
+                      <th>Balance</th>
+                      <th>Virtual funds</th>
+                      <th>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.deposits.map((d) => (
+                      <tr key={d.id}>
+                        <td>
+                          {new Date(d.createdAt).toLocaleString("en-AU", {
+                            timeZone: "Australia/Sydney",
+                          })}
+                        </td>
+                        <td>
+                          {d.account === "stocks"
+                            ? "Stocks / shared"
+                            : "Separate crypto"}
+                        </td>
+                        <td>{formatMoney(d.amountMicros)}</td>
+                        <td>{d.description || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <MarketSettings market={snapshot.market} />
             <ProfileReset
               onReset={() => {
